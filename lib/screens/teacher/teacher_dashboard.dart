@@ -420,7 +420,7 @@ class _AddSlotSheetState extends State<_AddSlotSheet> {
                 Expanded(
                   flex: 3,
                   child: DropdownButtonFormField<Branch>(
-                    initialValue: _branch,
+                    value: _branch,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Branch'),
                     items: [
@@ -440,7 +440,7 @@ class _AddSlotSheetState extends State<_AddSlotSheet> {
                 Expanded(
                   flex: 2,
                   child: DropdownButtonFormField<int>(
-                    initialValue: _year,
+                    value: _year,
                     decoration: const InputDecoration(labelText: 'Year'),
                     items: [
                       for (final y in years)

@@ -125,7 +125,7 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<Branch>(
-                    initialValue: _branch,
+                    value: _branch,
                     isExpanded: true,
                     decoration:
                         const InputDecoration(labelText: 'Branch / programme'),
@@ -142,7 +142,7 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<int>(
-                    initialValue: _year,
+                    value: _year,
                     decoration: const InputDecoration(labelText: 'Year'),
                     items: [
                       for (final y in years)

@@ -429,7 +429,7 @@ class _BoardScreenState extends State<BoardScreen> {
                   child: Transform(
                     transform:
                         Matrix4.translationValues(_offset.dx, _offset.dy, 0)
-                          ..scaleByDouble(_scale, _scale, 1, 1),
+                          ..scale(_scale, _scale, 1.0),
                     child: Container(
                       width: kCanvasSize.width,
                       height: kCanvasSize.height,
@@ -556,7 +556,7 @@ class _TopBar extends StatelessWidget {
             for (final c in kPenColors)
               _ColorDot(
                 color: c,
-                active: board.color.toARGB32() == c.toARGB32(),
+                active: board.color.value == c.value,
                 onTap: () => board.setColor(c),
               ),
             const SizedBox(width: 6),

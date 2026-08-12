@@ -102,8 +102,8 @@ class BoardController extends ChangeNotifier {
     active = Stroke(
       id: _rid(),
       color: tool == BoardTool.highlighter
-          ? color.withValues(alpha: 0.4).toARGB32()
-          : color.toARGB32(),
+          ? color.withValues(alpha: 0.4).value
+          : color.value,
       width: tool == BoardTool.highlighter ? strokeWidth * 4 : strokeWidth,
       tool: tool == BoardTool.highlighter ? 'highlighter' : 'pen',
       points: [p],
