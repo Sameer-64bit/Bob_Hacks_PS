@@ -1,0 +1,39 @@
+[project]
+name = "lectra"
+version = "0.1.0"
+description = "Extract the full content, structure, and summary of lecture videos and PDFs into one unified JSON format."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "certifi>=2024.0",
+    "faster-whisper>=1.0",
+    "opencv-python>=4.9",
+    "imagehash>=4.3",
+    "Pillow>=10.0",
+    "PyMuPDF>=1.24",
+]
+
+[project.optional-dependencies]
+# PaddleOCR wheels are platform-touchy, so OCR is an extra. Without it, fast
+# mode and the raw_ocr_text fallback degrade gracefully (with warnings).
+ocr = [
+    "paddleocr>=2.7,<3.0",
+    "paddlepaddle>=2.6",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+lectra = "lectra.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lectra*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
