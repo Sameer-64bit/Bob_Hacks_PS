@@ -1,30 +1,25 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:undertaker/main.dart';
+import 'package:kaksha/screens/landing.dart';
+import 'package:kaksha/screens/setup_screen.dart';
+import 'package:kaksha/theme.dart';
+
+Widget _wrap(Widget child) => MaterialApp(theme: buildTheme(), home: child);
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('landing screen shows all three roles', (tester) async {
+    await tester.pumpWidget(_wrap(const LandingScreen()));
+    expect(find.text("I'm a student"), findsOneWidget);
+    expect(find.text("I'm a teacher"), findsOneWidget);
+    expect(find.text('Smart board'), findsOneWidget);
+    expect(find.text('Kaksha'), findsOneWidget);
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  testWidgets('setup screen lists configuration steps', (tester) async {
+    await tester.pumpWidget(_wrap(const SetupScreen()));
+    expect(find.text('Almost there'), findsOneWidget);
+    expect(find.textContaining('supabase/schema.sql'), findsOneWidget);
+    expect(find.textContaining('lib/config.dart'), findsOneWidget);
   });
 }

@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kaksha-web",
+      "runtimeExecutable": "/opt/homebrew/bin/flutter",
+      "runtimeArgs": [
+        "run",
+        "-d",
+        "web-server",
+        "--web-port=5177",
+        "--dart-define=SUPABASE_URL=https://demo-placeholder.supabase.co",
+        "--dart-define=SUPABASE_ANON_KEY=demo-placeholder-key"
+      ],
+      "port": 5177
+    }
+  ]
+}
