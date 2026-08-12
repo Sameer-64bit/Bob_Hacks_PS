@@ -22,15 +22,18 @@ class AppConfig {
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
 
   // ---------------------------------------------------------------------
-  // Anthropic (Claude) API key — powers "Translate slide" and
-  // "Describe slide" for students. Get one at console.anthropic.com.
+  // Google Gemini API key — powers "Translate slide" and "Describe slide"
+  // for students. Get one at aistudio.google.com/apikey.
   // Optional: without it the AI buttons show a setup hint instead.
   // ---------------------------------------------------------------------
-  static const String _envAnthropicKey = String.fromEnvironment('ANTHROPIC_API_KEY');
-  static const String _pastedAnthropicKey = '';
+  // SECURITY: never commit a real key here — GitHub blocks the push and the
+  // key could be abused if the repo is public. Pass it at build time instead:
+  //   flutter run --dart-define=GEMINI_API_KEY=your-key
+  static const String _envGeminiKey = String.fromEnvironment('GEMINI_API_KEY');
+  static const String _pastedGeminiKey = '';
 
-  static String get anthropicApiKey =>
-      _envAnthropicKey.isNotEmpty ? _envAnthropicKey : _pastedAnthropicKey;
+  static String get geminiApiKey =>
+      _envGeminiKey.isNotEmpty ? _envGeminiKey : _pastedGeminiKey;
 
-  static bool get hasAi => anthropicApiKey.isNotEmpty;
+  static bool get hasAi => geminiApiKey.isNotEmpty;
 }

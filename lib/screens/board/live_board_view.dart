@@ -244,7 +244,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
               onPressed: AppConfig.hasAi
                   ? () => _runAi(slide, translateMode: true)
                   : () => showError(context,
-                      'Add an Anthropic API key in lib/config.dart to enable AI.'),
+                      'Add a Gemini API key in lib/config.dart to enable AI.'),
               icon: const Icon(Icons.translate, size: 18, color: Palette.marigold),
               label: Text(languageByCode(_language).native,
                   style: const TextStyle(color: Palette.marigold, fontSize: 13)),
@@ -254,7 +254,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
               onPressed: AppConfig.hasAi
                   ? () => _runAi(slide, translateMode: false)
                   : () => showError(context,
-                      'Add an Anthropic API key in lib/config.dart to enable AI.'),
+                      'Add a Gemini API key in lib/config.dart to enable AI.'),
               icon: const Icon(Icons.auto_awesome, color: Colors.white70, size: 20),
             ),
           ],

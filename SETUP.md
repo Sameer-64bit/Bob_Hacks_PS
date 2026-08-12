@@ -20,6 +20,16 @@ flutter pub get
 flutter run           # pick a device: Chrome, Android, iOS, macOS…
 ```
 
+### AI slide translate/describe (optional)
+
+The student "Translate slide" / "Describe slide" buttons use Google Gemini.
+Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and pass it at build time
+(don't commit it — GitHub will block the push):
+
+```bash
+flutter run --dart-define=GEMINI_API_KEY=your-key-here
+```
+
 For the smart board (People's Link panels run Android/Windows):
 
 - **Android panel**: `flutter build apk --release` → install `build/app/outputs/flutter-apk/app-release.apk`

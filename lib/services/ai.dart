@@ -8,11 +8,14 @@ import '../models/models.dart';
 import '../screens/board/board_controller.dart';
 import '../screens/board/board_painter.dart';
 
-/// Claude-powered slide helpers: translate the writing on a slide into the
+/// Gemini-powered slide helpers: translate the writing on a slide into the
 /// student's language, or describe what's on it.
 class SlideAi {
-  static const _endpoint = 'https://api.anthropic.com/v1/messages';
-  static const _model = 'claude-sonnet-5';
+  // The `-latest` alias always resolves to the current flash model, so this
+  // keeps working when Google retires older versions.
+  static const _model = 'gemini-flash-latest';
+  static const _endpoint =
+      'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent';
 
   /// Renders a slide's strokes to a PNG (half canvas resolution keeps the
   /// payload small while staying readable).
@@ -40,54 +43,61 @@ class SlideAi {
   static Future<String> _ask(BoardSlide slide, String prompt) async {
     if (!AppConfig.hasAi) {
       throw Exception(
-          'AI is not configured yet — add an Anthropic API key in lib/config.dart.');
+          'AI is not configured yet — add a Gemini API key in lib/config.dart.');
     }
     final imageB64 = await renderSlideBase64(slide);
-    final response = await http.post(
-      Uri.parse(_endpoint),
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': AppConfig.anthropicApiKey,
-        'anthropic-version': '2023-06-01',
-        // Required for calls made directly from a browser build.
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: jsonEncode({
-        'model': _model,
-        'max_tokens': 1024,
-        'messages': [
-          {
-            'role': 'user',
-            'content': [
-              {
-                'type': 'image',
-                'source': {
-                  'type': 'base64',
-                  'media_type': 'image/png',
-                  'data': imageB64,
-                },
-              },
-              {'type': 'text', 'text': prompt},
-            ],
-          }
-        ],
-      }),
-    );
-    if (response.statusCode != 200) {
+    final body = jsonEncode({
+      'contents': [
+        {
+          'parts': [
+            {
+              'inline_data': {'mime_type': 'image/png', 'data': imageB64},
+            },
+            {'text': prompt},
+          ],
+        }
+      ],
+      'generationConfig': {'maxOutputTokens': 2048},
+    });
+
+    // Free-tier Gemini throws transient 503/429 under load — retry twice.
+    http.Response response;
+    var attempt = 0;
+    do {
+      response = await http.post(
+        Uri.parse('$_endpoint?key=${AppConfig.geminiApiKey}'),
+        headers: {'content-type': 'application/json'},
+        body: body,
+      );
+      if (response.statusCode == 200) break;
+      attempt++;
+      if (attempt <= 2 &&
+          (response.statusCode == 503 || response.statusCode == 429)) {
+        await Future.delayed(Duration(seconds: 2 * attempt));
+        continue;
+      }
       final detail = switch (response.statusCode) {
-        401 => 'the API key was rejected',
-        429 => 'rate limited — try again in a moment',
+        400 || 401 || 403 => 'the API key was rejected',
+        429 || 503 => 'the AI is busy right now — try again in a moment',
         _ => 'HTTP ${response.statusCode}',
       };
       throw Exception('Could not reach the AI service ($detail).');
-    }
+    } while (true);
     final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final content = data['content'] as List;
-    return content
-        .where((c) => c['type'] == 'text')
-        .map((c) => c['text'] as String)
+    final candidates = data['candidates'] as List?;
+    if (candidates == null || candidates.isEmpty) {
+      throw Exception('The AI returned no answer — try again.');
+    }
+    final parts =
+        (candidates.first['content']?['parts'] as List?) ?? const [];
+    final text = parts
+        .map((p) => (p as Map)['text'] as String? ?? '')
         .join('\n')
         .trim();
+    if (text.isEmpty) {
+      throw Exception('The AI returned no answer — try again.');
+    }
+    return text;
   }
 
   /// Translates whatever is written on the slide into [languageName].
