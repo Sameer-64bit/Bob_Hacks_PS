@@ -324,6 +324,35 @@ class _BoardScreenState extends State<BoardScreen> {
     }
   }
 
+  /// Placeholder for the class-wrap-up flow (summary, attendance sync…).
+  /// For now it only confirms — the real implementation lands later.
+  Future<void> _endClass() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('End this class?'),
+        content: const Text(
+            'The board stays saved for the classroom. Wrap-up features '
+            '(class summary, attendance sync) arrive here soon.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Palette.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('End class'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Class ended — see you next time! 👋')));
+    }
+  }
+
   Future<void> _sharePdf() async {
     final board = _board;
     if (board == null) return;
@@ -520,6 +549,23 @@ class _BoardScreenState extends State<BoardScreen> {
                     ],
                   ),
                 ),
+                // Teachers see "End class" only on the final slide.
+                if (board.current == board.slides.length - 1)
+                  Positioned(
+                    right: 16,
+                    bottom: 16,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Palette.red,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 14),
+                      ),
+                      onPressed: _endClass,
+                      icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                      label: const Text('End class'),
+                    ),
+                  ),
               ],
             ),
           ),
