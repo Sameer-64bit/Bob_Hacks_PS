@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../../data/branches.dart';
+import '../../data/languages.dart';
 import '../../models/models.dart';
 import '../../services/repository.dart';
+import '../../services/repository2.dart';
 import '../../services/session.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
+import '../../widgets/language_picker.dart';
 import '../board/board_screen.dart';
 import '../landing.dart';
+import 'assignments_tab.dart';
+import 'attendance_tab.dart';
+import 'doubts_tab.dart';
 
 class TeacherDashboard extends StatefulWidget {
   final Teacher teacher;
@@ -20,6 +26,8 @@ class TeacherDashboard extends StatefulWidget {
 class _TeacherDashboardState extends State<TeacherDashboard> {
   List<ScheduleEntry> _schedule = [];
   bool _loading = true;
+  int _tab = 0;
+  String _language = 'en';
 
   @override
   void initState() {
@@ -31,15 +39,29 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     setState(() => _loading = true);
     try {
       final schedule = await repo.teacherSchedule(widget.teacher.id);
+      final language =
+          await repo.languageOf(isTeacher: true, id: widget.teacher.id);
       if (!mounted) return;
       setState(() {
         _schedule = schedule;
+        _language = language;
         _loading = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
       showError(context, e);
+    }
+  }
+
+  Future<void> _pickLanguage() async {
+    final code = await showLanguagePicker(context, _language);
+    if (code == null || code == _language) return;
+    setState(() => _language = code);
+    try {
+      await repo.setLanguage(isTeacher: true, id: widget.teacher.id, code: code);
+    } catch (e) {
+      if (mounted) showError(context, e);
     }
   }
 
@@ -101,13 +123,16 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
     final classrooms = _classrooms.values.toList();
 
     return Scaffold(
       appBar: AppBar(
         title: Text('Prof. ${widget.teacher.name.split(' ').first}'),
         actions: [
+          IconButton(
+              tooltip: 'Language · ${languageByCode(_language).native}',
+              onPressed: _pickLanguage,
+              icon: const Icon(Icons.translate)),
           IconButton(
               tooltip: 'Refresh',
               onPressed: _load,
@@ -119,16 +144,53 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           const SizedBox(width: 8),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addSlots,
-        backgroundColor: Palette.dark,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('Add class'),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        backgroundColor: Palette.card,
+        indicatorColor: Palette.marigold.withValues(alpha: 0.25),
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.calendar_month_outlined), label: 'Schedule'),
+          NavigationDestination(
+              icon: Icon(Icons.assignment_outlined), label: 'Assignments'),
+          NavigationDestination(
+              icon: Icon(Icons.forum_outlined), label: 'Doubts'),
+          NavigationDestination(
+              icon: Icon(Icons.fact_check_outlined), label: 'Attendance'),
+        ],
       ),
+      floatingActionButton: _tab == 0
+          ? FloatingActionButton.extended(
+              onPressed: _addSlots,
+              backgroundColor: Palette.dark,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add),
+              label: const Text('Add class'),
+            )
+          : null,
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: Palette.navy))
-          : Center(
+          : switch (_tab) {
+              1 => TeacherAssignmentsTab(
+                  key: ValueKey('assignments-${classrooms.length}'),
+                  teacher: widget.teacher,
+                  classrooms: classrooms),
+              2 => TeacherDoubtsTab(
+                  key: ValueKey('doubts-${classrooms.length}'),
+                  teacher: widget.teacher,
+                  classrooms: classrooms),
+              3 => TeacherAttendanceTab(
+                  key: ValueKey('attendance-${classrooms.length}'),
+                  classrooms: classrooms),
+              _ => _buildScheduleTab(classrooms),
+            },
+    );
+  }
+
+  Widget _buildScheduleTab(List<Classroom> classrooms) {
+    final text = Theme.of(context).textTheme;
+    return Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 680),
                 child: ListView(
@@ -208,8 +270,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
                   ],
                 ),
               ),
-            ),
-    );
+            );
   }
 }
 

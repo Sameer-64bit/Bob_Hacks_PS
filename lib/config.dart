@@ -20,4 +20,17 @@ class AppConfig {
 
   static bool get isConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
+
+  // ---------------------------------------------------------------------
+  // Anthropic (Claude) API key — powers "Translate slide" and
+  // "Describe slide" for students. Get one at console.anthropic.com.
+  // Optional: without it the AI buttons show a setup hint instead.
+  // ---------------------------------------------------------------------
+  static const String _envAnthropicKey = String.fromEnvironment('ANTHROPIC_API_KEY');
+  static const String _pastedAnthropicKey = '';
+
+  static String get anthropicApiKey =>
+      _envAnthropicKey.isNotEmpty ? _envAnthropicKey : _pastedAnthropicKey;
+
+  static bool get hasAi => anthropicApiKey.isNotEmpty;
 }

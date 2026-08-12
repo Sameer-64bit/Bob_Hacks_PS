@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/models.dart';
+import '../../models/models2.dart';
 import '../../services/repository.dart';
+import '../../services/repository2.dart';
 import '../../theme.dart';
 import 'board_controller.dart';
 import 'board_join.dart';
@@ -54,18 +56,41 @@ class _BoardScreenState extends State<BoardScreen> {
   String _saveStatus = 'Saved';
   int _revision = 0;
 
+  // Live class events (raised hands / chats from students)
+  StreamSubscription<List<ClassEvent>>? _eventsSub;
+  final DateTime _joinedAt = DateTime.now();
+  final Set<String> _seenEvents = {};
+  final List<ClassEvent> _popups = [];
+
   @override
   void initState() {
     super.initState();
     _load();
+    _subscribeToClassEvents();
   }
 
   @override
   void dispose() {
+    _eventsSub?.cancel();
     _saveTimer?.cancel();
     _flushSaves();
     _board?.dispose();
     super.dispose();
+  }
+
+  void _subscribeToClassEvents() {
+    final classroom = widget.classroom;
+    if (classroom == null) return;
+    _eventsSub = repo.streamClassEvents(classroom.id).listen((events) {
+      for (final event in events) {
+        if (event.createdAt.isBefore(_joinedAt)) continue;
+        if (!_seenEvents.add(event.id)) continue;
+        setState(() => _popups.add(event));
+        Timer(const Duration(seconds: 8), () {
+          if (mounted) setState(() => _popups.remove(event));
+        });
+      }
+    }, onError: (_) {});
   }
 
   Classroom? get _classroom => widget.classroom;
@@ -455,12 +480,98 @@ class _BoardScreenState extends State<BoardScreen> {
                     ),
                   ),
                 ),
+                // Raised hands / chats from students pop up here.
+                Positioned(
+                  top: 12,
+                  right: 12,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      for (final event in _popups.reversed.take(4))
+                        _EventPopup(event: event),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
         ),
       );
     });
+  }
+}
+
+/// Popup card shown on the teacher's board when a student raises a hand
+/// or sends a chat message.
+class _EventPopup extends StatelessWidget {
+  final ClassEvent event;
+  const _EventPopup({required this.event});
+
+  @override
+  Widget build(BuildContext context) {
+    final isHand = event.kind == 'hand';
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(offset: Offset(0, 12 * (1 - t)), child: child),
+      ),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: const BoxConstraints(maxWidth: 340),
+        decoration: BoxDecoration(
+          color: _chromeLight,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: isHand ? Palette.marigold : _chromeLine, width: 1.2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isHand ? Icons.back_hand : Icons.chat_bubble_outline,
+              color: isHand ? Palette.marigold : const Color(0xFF8FB8D8),
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    isHand
+                        ? '${event.studentName} raised a hand · slide ${event.slideIndex + 1}'
+                        : event.studentName,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700),
+                  ),
+                  if (!isHand)
+                    Text(
+                      event.body,
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontSize: 13),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

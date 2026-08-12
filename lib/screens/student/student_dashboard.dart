@@ -2,13 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 
 import '../../data/branches.dart';
+import '../../data/languages.dart';
 import '../../models/models.dart';
 import '../../services/repository.dart';
+import '../../services/repository2.dart';
 import '../../services/session.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
-import '../board/board_screen.dart';
+import '../../widgets/language_picker.dart';
+import '../board/live_board_view.dart';
 import '../landing.dart';
+import 'assignments_tab.dart';
+import 'doubts_tab.dart';
 
 class StudentDashboard extends StatefulWidget {
   final Student student;
@@ -23,6 +28,8 @@ class _StudentDashboardState extends State<StudentDashboard> {
   List<ScheduleEntry> _schedule = [];
   bool _loading = true;
   String? _error;
+  int _tab = 0;
+  String _language = 'en';
 
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
@@ -49,10 +56,17 @@ class _StudentDashboardState extends State<StudentDashboard> {
       }
       final classroom = await repo.classroomById(classroomId);
       final schedule = await repo.classroomSchedule(classroomId);
+      String language = _language;
+      try {
+        language = await repo.languageOf(isTeacher: false, id: widget.student.id);
+      } catch (_) {
+        // language column arrives with schema_v2 — fall back quietly
+      }
       if (!mounted) return;
       setState(() {
         _classroom = classroom;
         _schedule = schedule;
+        _language = language;
         _loading = false;
       });
     } catch (e) {
@@ -61,6 +75,18 @@ class _StudentDashboardState extends State<StudentDashboard> {
         _loading = false;
         _error = 'Could not load your classes. Pull to retry.';
       });
+    }
+  }
+
+  Future<void> _pickLanguage() async {
+    final code = await showLanguagePicker(context, _language);
+    if (code == null || code == _language) return;
+    setState(() => _language = code);
+    try {
+      await repo.setLanguage(
+          isTeacher: false, id: widget.student.id, code: code);
+    } catch (e) {
+      if (mounted) showError(context, e);
     }
   }
 
@@ -80,14 +106,15 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
-    final branch = branchByKey(widget.student.branch);
-    final dayClasses = _classesOn(_selectedDay);
-
     return Scaffold(
       appBar: AppBar(
         title: Text('Hi, ${widget.student.name.split(' ').first}'),
         actions: [
+          IconButton(
+            tooltip: 'Language · ${languageByCode(_language).native}',
+            onPressed: _pickLanguage,
+            icon: const Icon(Icons.translate),
+          ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _load,
@@ -101,7 +128,34 @@ class _StudentDashboardState extends State<StudentDashboard> {
           const SizedBox(width: 8),
         ],
       ),
-      body: _loading
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        backgroundColor: Palette.card,
+        indicatorColor: Palette.marigold.withValues(alpha: 0.25),
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.calendar_month_outlined), label: 'Calendar'),
+          NavigationDestination(
+              icon: Icon(Icons.assignment_outlined), label: 'Assignments'),
+          NavigationDestination(
+              icon: Icon(Icons.live_help_outlined), label: 'Doubts'),
+        ],
+      ),
+      body: switch (_tab) {
+        1 => StudentAssignmentsTab(student: widget.student),
+        2 => StudentDoubtsTab(student: widget.student),
+        _ => _buildCalendarTab(),
+      },
+    );
+  }
+
+  Widget _buildCalendarTab() {
+    final text = Theme.of(context).textTheme;
+    final branch = branchByKey(widget.student.branch);
+    final dayClasses = _classesOn(_selectedDay);
+
+    return _loading
           ? const Center(child: CircularProgressIndicator(color: Palette.navy))
           : RefreshIndicator(
               color: Palette.navy,
@@ -123,8 +177,9 @@ class _StudentDashboardState extends State<StudentDashboard> {
                             ? null
                             : () => Navigator.of(context).push(
                                 MaterialPageRoute(
-                                    builder: (_) =>
-                                        BoardScreen(classroom: _classroom!))),
+                                    builder: (_) => LiveBoardView(
+                                        classroom: _classroom!,
+                                        student: widget.student))),
                       ),
                       if (_error != null) ...[
                         const SizedBox(height: 16),
@@ -180,8 +235,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                   ),
                 ),
               ),
-            ),
-    );
+            );
   }
 
   int _teacherCount() => _schedule.map((s) => s.teacherId).toSet().length;
@@ -373,7 +427,7 @@ class _HeaderCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                   ),
                   icon: const Icon(Icons.draw_outlined, size: 18),
-                  label: const Text('Open board'),
+                  label: const Text('Watch live'),
                 ),
             ],
           ),
