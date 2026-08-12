@@ -30,10 +30,10 @@ class AppConfig {
   // key could be abused if the repo is public. Pass it at build time instead:
   //   flutter run --dart-define=GEMINI_API_KEY=your-key
   static const String _envGeminiKey = String.fromEnvironment('GEMINI_API_KEY');
-  static const String _pastedGeminiKey = '';
+  static const String _pastedGeminiKey = 'local-proxy-mode';
 
   static String get geminiApiKey =>
       _envGeminiKey.isNotEmpty ? _envGeminiKey : _pastedGeminiKey;
 
-  static bool get hasAi => geminiApiKey.isNotEmpty;
+  static bool get hasAi => true;
 }
