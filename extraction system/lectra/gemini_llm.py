@@ -1,10 +1,8 @@
-"""Gemini API backend (activated when GEMINI_API_KEY is set).
+"""The Gemini API client — lectra's LLM backend.
 
-Mirrors the lectra.local_llm chat interface so the rest of the pipeline is
-backend-agnostic. Gemini Flash is multimodal, so page/slide images go straight
-to the model — no local vision model or OCR needed. Structured calls use
-Gemini's responseSchema (converted from the pydantic JSON schema) so replies
-are constrained to valid JSON.
+Gemini Flash is multimodal, so page/slide images go straight to the model.
+Structured calls use Gemini's responseSchema (converted from the pydantic
+JSON schema) so replies are constrained to valid JSON.
 
 The key is read from the GEMINI_API_KEY environment variable only — it is
 never written to disk. Transport is stdlib urllib; 429/5xx responses are
@@ -21,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .errors import LocalLLMError
+from .errors import LLMError
 from .progress import warn
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -83,11 +81,11 @@ def _request(path: str, payload: dict | None, timeout: float) -> dict:
             detail = ""
         if exc.code in (429, 500, 503):
             raise _RetryableHTTP(exc.code, detail) from exc
-        raise LocalLLMError(f"Gemini API request failed (HTTP {exc.code}): {detail}") from exc
+        raise LLMError(f"Gemini API request failed (HTTP {exc.code}): {detail}") from exc
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        raise LocalLLMError(f"Could not reach the Gemini API ({exc}).") from exc
+        raise LLMError(f"Could not reach the Gemini API ({exc}).") from exc
     except json.JSONDecodeError as exc:
-        raise LocalLLMError(f"Gemini API returned invalid JSON: {exc}") from exc
+        raise LLMError(f"Gemini API returned invalid JSON: {exc}") from exc
 
 
 def readiness() -> tuple[bool, str]:
@@ -98,7 +96,7 @@ def readiness() -> tuple[bool, str]:
         _request(f"/models/{model_name()}", None, timeout=15.0)
     except _RetryableHTTP:
         return True, ""  # rate-limited but alive — the chat retry loop handles it
-    except LocalLLMError as exc:
+    except LLMError as exc:
         return False, f"Gemini API check failed for model '{model_name()}': {exc}"
     return True, ""
 
@@ -200,14 +198,14 @@ def chat(
                 warn(f"Gemini API {exc} — retrying in {RETRY_DELAYS[attempt]:.0f}s")
                 time.sleep(RETRY_DELAYS[attempt])
                 continue
-            raise LocalLLMError(f"Gemini API kept failing after retries: {exc}") from exc
+            raise LLMError(f"Gemini API kept failing after retries: {exc}") from exc
     else:  # pragma: no cover
-        raise LocalLLMError(f"Gemini API kept failing after retries: {last_error}")
+        raise LLMError(f"Gemini API kept failing after retries: {last_error}")
 
     candidates = data.get("candidates") or []
     if not candidates:
         block = (data.get("promptFeedback") or {}).get("blockReason", "unknown")
-        raise LocalLLMError(f"Gemini returned no candidates (blockReason={block}).")
+        raise LLMError(f"Gemini returned no candidates (blockReason={block}).")
     candidate = candidates[0]
     text = "".join(
         part.get("text", "")
@@ -216,5 +214,5 @@ def chat(
     ).strip()
     if not text:
         finish = candidate.get("finishReason", "unknown")
-        raise LocalLLMError(f"Gemini returned empty content (finishReason={finish}).")
+        raise LLMError(f"Gemini returned empty content (finishReason={finish}).")
     return text

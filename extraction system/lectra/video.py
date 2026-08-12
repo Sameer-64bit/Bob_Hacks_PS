@@ -317,10 +317,10 @@ def build_sections(slides: Sequence[Slide], mode: str) -> list[Section]:
         if mode == "deep" and slide.asset_path is not None:
             try:
                 visual_markdown = vision.describe_image_markdown(
-                    slide.asset_path, kind="lecture slide", ocr_lines=raw_lines
+                    slide.asset_path, kind="lecture slide"
                 )
                 title = vision.title_from_markdown(visual_markdown)
-                log(f"  slide {number}/{len(slides)} structured by the local LLM")
+                log(f"  slide {number}/{len(slides)} transcribed by Gemini")
             except VisionError as exc:
                 warn(f"slide {number}: {exc} Falling back to raw OCR text for this slide.")
         if not visual_markdown:
@@ -385,7 +385,7 @@ def process_video(
         save_slides(slides, assets_dir)
         log(f"  {len(slides)} unique slides -> {assets_dir}")
 
-    content_backend = "local LLM + OCR" if mode == "deep" else "PaddleOCR"
+    content_backend = "Gemini vision + OCR" if mode == "deep" else "OCR"
     with stage(f"Slide content extraction ({content_backend})"):
         sections = build_sections(slides, mode)
 

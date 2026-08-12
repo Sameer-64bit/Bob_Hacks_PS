@@ -128,7 +128,7 @@ def process_pdf(pdf_path: Path, mode: str, assets_dir: Path) -> tuple[list[Secti
     ocr_warned = False
     try:
         page_count = document.page_count
-        backend = "local LLM + OCR" if mode == "deep" else "PaddleOCR"
+        backend = "Gemini vision + OCR" if mode == "deep" else "OCR"
         with stage(f"PDF extraction ({page_count} pages; scanned pages via {backend})"):
             for page_index in range(page_count):
                 page = document[page_index]
@@ -187,10 +187,10 @@ def _scanned_page_section(
     if mode == "deep":
         try:
             visual_markdown = vision.describe_image_markdown(
-                image_path, kind="scanned document page", ocr_lines=raw_lines
+                image_path, kind="scanned document page"
             )
             title = vision.title_from_markdown(visual_markdown)
-            log(f"  page {page_number} (scanned) structured by the local LLM")
+            log(f"  page {page_number} (scanned) transcribed by Gemini")
         except VisionError as exc:
             warn(f"page {page_number}: {exc} Falling back to raw OCR text for this page.")
     if not visual_markdown:

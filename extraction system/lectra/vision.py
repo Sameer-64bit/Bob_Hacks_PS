@@ -1,13 +1,12 @@
 """Shared content-extraction backends used by BOTH pipelines.
 
 Two backends live here:
-  * PaddleOCR — "fast" mode text extraction, and the raw_ocr_text fallback
-    that is always captured, even in deep mode.
-  * Local LLM (via lectra.local_llm / Ollama) — "deep" mode structured
-    markdown. If LECTRA_VISION_MODEL names an installed local vision model
-    (e.g. qwen2.5vl:7b), the slide/page image is read directly; otherwise the
-    default 7B thinking model reconstructs structured markdown from the OCR
-    lines. One call per slide/page — small, 7B-sized requests.
+  * OCR (PaddleOCR, with a system-tesseract fallback) — "fast" mode text
+    extraction, and the raw_ocr_text fallback that is always captured, even
+    in deep mode.
+  * Gemini vision (lectra.gemini_llm) — "deep" mode structured markdown:
+    each slide/page image goes straight to the multimodal Gemini API, one
+    call per image.
 
 Heavy imports (paddleocr, PIL) are deferred to call time so the rest of the
 package imports without them installed.
@@ -22,20 +21,18 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import local_llm
-from .errors import LocalLLMError, OCRUnavailableError, VisionError
+from . import gemini_llm
+from .errors import LLMError, OCRUnavailableError, VisionError
 from .progress import warn
 
 MAX_IMAGE_DIM = 1568  # px — larger slides are downscaled before the LLM call
-MAX_OCR_LINES = 300  # per-image cap keeps a single call 7B-sized
 
 _ocr_engine = None
-_missing_vision_model_warned = False
 _tesseract_fallback_warned = False
 
 
 # ---------------------------------------------------------------------------
-# OCR (PaddleOCR)
+# OCR (PaddleOCR, tesseract fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -133,12 +130,12 @@ def _parse_ocr_result(result) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Deep-mode structured markdown via the local LLM
+# Deep-mode structured markdown via Gemini vision
 # ---------------------------------------------------------------------------
 
 
 def _encode_image(image_path: Path | str) -> str:
-    """Base64-encode an image for Ollama, downscaling oversized frames."""
+    """Base64-encode an image for the API, downscaling oversized frames."""
     try:
         from PIL import Image
     except ImportError as exc:
@@ -165,80 +162,16 @@ Rules:
 - For every diagram, chart, table, or figure, add a line: 'Figure: <one or two sentence description>'.
 - Transcribe faithfully; do not invent content that is not visible."""
 
-_STRUCTURE_PROMPT = """\
-Below are raw OCR text lines extracted from a {kind}, in reading order. Reconstruct the original content as structured Markdown. Return ONLY the Markdown — no preamble, no commentary.
 
-Rules:
-- Start with the title as a '## ' heading (invent a short descriptive one if none is apparent).
-- Rebuild bullet points as Markdown lists, preserving any hierarchy you can infer.
-- Write ALL mathematical notation as LaTeX: $...$ inline, $$...$$ for display equations. Preserve subscripts, superscripts, Greek letters, and symbols exactly. Never approximate math with plain words.
-- Put code in fenced code blocks with a language tag when identifiable.
-- If lines clearly describe a diagram, chart, or figure, add a line: 'Figure: <one or two sentence description>'.
-- Do not invent content that is not supported by the OCR lines.
-
-OCR LINES:
-{lines}"""
-
-
-def describe_image_markdown(
-    image_path: Path | str,
-    kind: str = "lecture slide",
-    ocr_lines: list[str] | None = None,
-) -> str:
-    """Produce structured markdown for one slide/page image via the local LLM.
-
-    Preferred path: a local vision model (LECTRA_VISION_MODEL) reads the image
-    directly. Fallback path: the default 7B thinking model reconstructs the
-    content from the OCR lines. Raises VisionError when neither is possible.
-    """
-    global _missing_vision_model_warned
-
-    if local_llm.backend() == "gemini":
-        # Gemini Flash is multimodal — the page image goes straight to the API.
-        image_b64 = _encode_image(image_path)
-        try:
-            content = local_llm.chat(_SLIDE_PROMPT.format(kind=kind), images=[image_b64])
-        except LocalLLMError as exc:
-            raise VisionError(f"Gemini vision call failed for {image_path}: {exc}") from exc
-        if not content:
-            raise VisionError(f"Gemini returned empty output for {image_path}.")
-        return _strip_outer_fence(content)
-
-    vision_model = local_llm.vision_model_name()
-    if vision_model:
-        if local_llm.model_installed(vision_model):
-            image_b64 = _encode_image(image_path)
-            try:
-                content = local_llm.chat(
-                    _SLIDE_PROMPT.format(kind=kind), images=[image_b64], model=vision_model
-                )
-            except LocalLLMError as exc:
-                raise VisionError(f"Local vision model call failed for {image_path}: {exc}") from exc
-            if not content:
-                raise VisionError(f"Local vision model returned empty output for {image_path}.")
-            return _strip_outer_fence(content)
-        if not _missing_vision_model_warned:
-            warn(
-                f"LECTRA_VISION_MODEL='{vision_model}' is not installed "
-                f"(ollama pull {vision_model}) — structuring OCR text with "
-                f"'{local_llm.model_name()}' instead."
-            )
-            _missing_vision_model_warned = True
-
-    lines = [line.strip() for line in (ocr_lines or []) if line and line.strip()]
-    if not lines:
-        raise VisionError(
-            f"No OCR text available to structure for {image_path} — install the OCR extra "
-            "(pip install 'lectra[ocr]') or set LECTRA_VISION_MODEL to a local vision model."
-        )
+def describe_image_markdown(image_path: Path | str, kind: str = "lecture slide") -> str:
+    """Produce structured markdown for one slide/page image via Gemini vision."""
+    image_b64 = _encode_image(image_path)
     try:
-        content = local_llm.chat(
-            _STRUCTURE_PROMPT.format(kind=kind, lines="\n".join(lines[:MAX_OCR_LINES]))
-        )
-    except LocalLLMError as exc:
-        raise VisionError(f"Local LLM structuring call failed for {image_path}: {exc}") from exc
+        content = gemini_llm.chat(_SLIDE_PROMPT.format(kind=kind), images=[image_b64])
+    except LLMError as exc:
+        raise VisionError(f"Gemini vision call failed for {image_path}: {exc}") from exc
     if not content:
-        raise VisionError(f"Local LLM returned empty structured markdown for {image_path}.")
+        raise VisionError(f"Gemini returned empty output for {image_path}.")
     return _strip_outer_fence(content)
 
 

@@ -48,3 +48,10 @@ app.*.map.json
 linux/flutter/ephemeral/
 windows/flutter/ephemeral/
 macos/Flutter/ephemeral/
+
+# Local demo artifacts and heavy working folders
+video_to_ppt/
+*.lectra.json
+*.lectra.assets/
+demo_video.mp4
+demo_pdf.pdf

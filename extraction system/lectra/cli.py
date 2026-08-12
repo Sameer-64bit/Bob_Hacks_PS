@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, local_llm, pdf_pipeline, understand, video
+from . import __version__, gemini_llm, pdf_pipeline, understand, video
 from .errors import LectraError
 from .progress import log, stage, warn
 from .router import route
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("fast", "deep"),
         default="deep",
-        help="deep = Claude vision for slides/scanned pages (default); fast = OCR only",
+        help="deep = Gemini vision for slides/scanned pages (default); fast = OCR only",
     )
     process.add_argument(
         "--assets-dir",
@@ -83,10 +83,10 @@ def _process(args: argparse.Namespace) -> int:
         return 2
     kind = route(input_path)
 
-    llm_ready, llm_reason = local_llm.readiness()
+    llm_ready, llm_reason = gemini_llm.readiness()
     mode = args.mode
     if mode == "deep" and not llm_ready:
-        warn(f"{llm_reason} — falling back to --mode fast (OCR only, no local LLM).")
+        warn(f"{llm_reason} — falling back to --mode fast (OCR only, no LLM).")
         mode = "fast"
 
     output = Path(args.output).expanduser() if args.output else input_path.with_suffix(".lectra.json")
@@ -97,7 +97,7 @@ def _process(args: argparse.Namespace) -> int:
     )
     log(
         f"Input: {input_path} ({kind}), mode={mode}, "
-        f"llm={local_llm.model_name()} (thinking mode) @ {local_llm.base_url()}"
+        f"llm={gemini_llm.model_name()} (Gemini API)"
     )
 
     transcript = []
@@ -117,7 +117,7 @@ def _process(args: argparse.Namespace) -> int:
 
     if llm_ready:
         with stage(
-            f"Understanding layer (local LLM '{local_llm.model_name()}', multiple calls)"
+            f"Understanding layer (Gemini '{gemini_llm.model_name()}', multiple calls)"
         ):
             response = understand.run_understanding(sections, source_type=kind)
         summary = understand.apply_understanding(sections, response)

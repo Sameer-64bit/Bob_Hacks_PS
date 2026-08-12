@@ -37,9 +37,8 @@ def _make_pdf(path):
 
 
 def test_pdf_pipeline_end_to_end_fast_mode(tmp_path, monkeypatch):
-    # Force the local backend at an unreachable port so the run is deterministic
+    # No API key -> deterministic fallback path (no network calls)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.setenv("LECTRA_OLLAMA_URL", "http://127.0.0.1:9")
 
     pdf_path = tmp_path / "mini_lecture.pdf"
     _make_pdf(pdf_path)
@@ -72,15 +71,14 @@ def test_pdf_pipeline_end_to_end_fast_mode(tmp_path, monkeypatch):
     # digital pages keep their extracted text as the raw fallback
     assert "update rule" in doc.sections[0].raw_ocr_text
 
-    # no local LLM -> locally built fallback summary, one chapter per section
+    # no API key -> locally built fallback summary, one chapter per section
     assert len(doc.summary.chapters) == 2
     assert doc.summary.chapters[0].start.page == 1
     assert doc.summary.one_liner
 
 
-def test_deep_mode_without_local_llm_falls_back_to_fast(tmp_path, monkeypatch, capsys):
+def test_deep_mode_without_api_key_falls_back_to_fast(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.setenv("LECTRA_OLLAMA_URL", "http://127.0.0.1:9")
 
     pdf_path = tmp_path / "mini.pdf"
     _make_pdf(pdf_path)

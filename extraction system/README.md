@@ -2,7 +2,7 @@
 
 `lectra` turns a **lecture video** or a **PDF** into one structured JSON file containing the full content, structure, and summary of the input — with mathematical notation preserved as LaTeX and code kept in fenced blocks.
 
-**All AI runs locally.** There is no cloud API: lectra talks to a local model served by [Ollama](https://ollama.com) — by default **`qwen3:8b`**, a small local reasoning model, with **thinking mode** enabled on every call. Because a model this size can't digest a whole lecture in one giant request, the understanding layer is decomposed into **multiple small calls**: one summary call per section, then separate calls for chapters, key concepts, document info, and the global summary.
+The AI layer is powered by the **Gemini API** (multimodal — page and slide images go straight to the model). Because one giant request is fragile, the understanding layer is decomposed into **multiple small calls**: one summary call per section, then separate calls for chapters, key concepts, document info, and the global summary — each schema-constrained, validated, and retried once on malformed output.
 
 ```
 lectra process <input_file> [--output out.json] [--mode fast|deep]
@@ -17,18 +17,18 @@ Both pipelines emit the **same unified JSON schema** (validated with pydantic be
 1. ffmpeg extracts 16 kHz mono audio.
 2. faster-whisper (`small`, int8, VAD) produces a timestamped transcript.
 3. OpenCV samples a frame every 2 s; perceptual hashes (phash) detect slide changes; revisited slides are deduplicated — each unique slide keeps *all* of its appearance time ranges and is saved as `slide_001.png`, … in an assets folder.
-4. Slide content: **fast** mode stores raw PaddleOCR lines; **deep** mode (default) makes one local-LLM call per slide to produce structured markdown (title, bullet hierarchy, equations in LaTeX, code in fenced blocks, figure descriptions). If `LECTRA_VISION_MODEL` names a local vision model (e.g. `qwen2.5vl:7b`) the slide image is read directly; otherwise the 7B thinking model reconstructs the content from the OCR lines. Raw OCR text is always kept as a fallback.
+4. Slide content: **fast** mode stores raw OCR lines; **deep** mode (default) sends each slide image to Gemini for structured markdown (title, bullet hierarchy, equations in LaTeX, code in fenced blocks, one-line figure descriptions). Raw OCR text is always kept as a fallback.
 5. Transcript segments are aligned to the slide on screen when they were spoken.
-6. The understanding layer runs its multi-call pass (see below): global summary, key concepts with first-seen timestamps, chapter markers, per-section summaries.
+6. The understanding layer runs its multi-call pass: global summary, key concepts with first-seen timestamps, chapter markers, per-section summaries.
 
 **PDF**:
 
 1. PyMuPDF opens the file; a page with fewer than 20 characters of text *and* at least one image is classified as **scanned**.
 2. Digital pages: font-size information turns large spans into markdown headings; text becomes clean per-page markdown.
-3. Scanned pages: rendered to PNG at 200 dpi, then OCR (fast) or a local-LLM structuring call (deep) — same backends and LaTeX-preservation rules as video slides.
+3. Scanned pages: rendered to PNG at 200 dpi, then OCR (fast) or Gemini vision (deep) — same LaTeX-preservation rules as video slides.
 4. Understanding layer as above, with page numbers instead of timestamps.
 
-**The understanding layer — multiple calls for one thing.** Instead of a single oversized request, lectra makes N + 4 small calls, each sized for a 7B model:
+**The understanding layer — multiple calls for one thing:**
 
 | Call | Output |
 |---|---|
@@ -38,25 +38,16 @@ Both pipelines emit the **same unified JSON schema** (validated with pydantic be
 | N+3 | key concepts + first-seen locations (schema-constrained JSON) |
 | N+4 | 3–6 paragraph global summary (plain text) |
 
-Structured calls pass a JSON schema through Ollama's `format` parameter, are validated with pydantic, retried **once** with the error message on malformed output, and then fail loudly. Thinking output (`<think>…</think>` / Ollama's `thinking` field) is kept out of the results.
+Structured calls are constrained with Gemini's `responseSchema`, validated with pydantic, retried **once** with the error message on malformed output, and then fail loudly.
 
 ## Install
 
-Python **3.11+** is required. Either `uv` or plain `venv`+`pip` works — dependencies live in `pyproject.toml` with a mirrored `requirements.txt`. The LLM client is stdlib-only (no SDK).
+Python **3.11+** is required. Either `uv` or plain `venv`+`pip` works — dependencies live in `pyproject.toml` with a mirrored `requirements.txt`. The Gemini client is stdlib-only (no SDK).
 
-**1. Ollama + the thinking model:**
-
-```bash
-brew install ollama          # macOS (or download from https://ollama.com)
-ollama serve                 # if the Ollama app isn't already running
-ollama pull qwen3:8b         # ~5.2 GB, the default model
-```
-
-Optional — a local vision model so deep mode reads slide images directly instead of structuring OCR text:
+**1. A Gemini API key** (from [Google AI Studio](https://aistudio.google.com/apikey)):
 
 ```bash
-ollama pull qwen2.5vl:7b
-export LECTRA_VISION_MODEL=qwen2.5vl:7b
+export GEMINI_API_KEY=your-key-here
 ```
 
 **2. ffmpeg** (needed for video inputs):
@@ -66,15 +57,7 @@ brew install ffmpeg        # macOS
 sudo apt install ffmpeg    # Debian/Ubuntu
 ```
 
-**3. The package** — with `uv`:
-
-```bash
-cd "extraction system"
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-```
-
-or with plain pip:
+**3. The package:**
 
 ```bash
 cd "extraction system"
@@ -83,15 +66,16 @@ pip install -r requirements.txt
 pip install -e ".[dev]"        # installs the `lectra` command + pytest
 ```
 
-**4. OCR (recommended)** — PaddleOCR powers `--mode fast`, the always-kept `raw_ocr_text`, and (when no vision model is configured) the text that deep mode structures. Its wheels are platform-sensitive, so it ships as an extra:
+**4. OCR (optional)** — populates the `raw_ocr_text` fallback and powers `--mode fast`. PaddleOCR ships as an extra because its wheels are platform-sensitive; a system `tesseract` binary is used as an automatic fallback when PaddleOCR is absent:
 
 ```bash
 pip install -e ".[ocr]"        # paddleocr + paddlepaddle
+# or: brew install tesseract
 ```
 
-If the Ollama server is down or the model isn't pulled, lectra **does not crash**: it warns, drops to fast mode, and writes a locally generated fallback summary.
+If `GEMINI_API_KEY` is missing, lectra **does not crash**: it warns, drops to fast mode, and writes a locally generated fallback summary.
 
-First-run downloads: faster-whisper fetches the `small` model (~460 MB) and PaddleOCR fetches its recognition models.
+First video run downloads the Whisper `small` model (~460 MB); transcription runs locally via faster-whisper.
 
 ## Usage
 
@@ -115,13 +99,12 @@ Progress for every stage — and how long it took — is printed to **stderr**; 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LECTRA_MODEL` | `qwen3:8b` | The local text model (thinking-capable) |
-| `LECTRA_VISION_MODEL` | *(unset)* | Optional local vision model for deep mode (e.g. `qwen2.5vl:7b`) |
-| `LECTRA_OLLAMA_URL` | `http://localhost:11434` | Where the Ollama server listens |
-| `LECTRA_NUM_CTX` | `8192` | Context window requested per call |
-| `LECTRA_LLM_TIMEOUT` | `600` | Per-call timeout in seconds (CPU inference is slow) |
+| `GEMINI_API_KEY` | *(required for deep mode + summaries)* | Gemini API key |
+| `LECTRA_GEMINI_MODEL` | `gemini-flash-latest` | Gemini model id |
+| `LECTRA_GEMINI_MIN_INTERVAL` | `3.2` | Seconds between API calls (raise on strict free-tier keys) |
+| `LECTRA_LLM_TIMEOUT` | `180` | Per-call timeout in seconds |
 
-Thinking mode is requested on every call; if a configured model doesn't support it, lectra warns once and continues without it.
+Rate limits are handled automatically: calls are paced, and 429/5xx responses are retried with backoff.
 
 ## Output schema (contract)
 
@@ -151,15 +134,13 @@ Timestamps are seconds as floats. The document is validated against the pydantic
 
 | Situation | Behavior |
 |---|---|
-| Ollama server unreachable | Warn → fall back to fast mode + local fallback summary |
-| `qwen3:8b` not pulled | Same, with the exact `ollama pull` command in the warning |
-| `--mode fast`, LLM available | OCR content, but the understanding layer still runs (text-only calls) |
-| Deep mode, no vision model configured | Slides/scanned pages are structured from their OCR lines by the text model |
-| `LECTRA_VISION_MODEL` set but not pulled | Warn once; fall back to OCR-line structuring |
-| PaddleOCR not installed | Warn once; `raw_ocr_text` empty; pipeline continues |
+| `GEMINI_API_KEY` not set | Warn → fall back to fast mode + local fallback summary |
+| `--mode fast`, key present | OCR content, but the understanding layer still runs |
+| API rate-limited (429) | Automatic pacing + backoff retries |
+| PaddleOCR not installed | Fall back to system `tesseract`; if absent too, warn and continue with empty `raw_ocr_text` |
 | ffmpeg missing (video input) | Clear fatal error with install instructions |
 | Video has no audio stream | Warn; empty transcript; slides still processed |
-| One slide's LLM call fails | Warn; that slide falls back to raw OCR text |
+| One slide's vision call fails | Warn; that slide falls back to raw OCR text |
 | Model emits malformed JSON | Retry once with the error message, then fail loudly |
 
 ## Project layout
@@ -170,15 +151,15 @@ lectra/
 ├── router.py        # extension → video | pdf
 ├── video.py         # ffmpeg → whisper → phash slides → dedup → align
 ├── pdf_pipeline.py  # page routing, heading-aware markdown, 200dpi renders
-├── vision.py        # shared OCR + local-LLM markdown structuring (BOTH pipelines)
-├── local_llm.py     # Ollama client: thinking mode, JSON-schema outputs, readiness
+├── vision.py        # shared OCR + Gemini vision (used by BOTH pipelines)
+├── gemini_llm.py    # Gemini API client: pacing, retries, responseSchema
 ├── understand.py    # multi-call understanding layer + retry + offline fallback
 ├── schema.py        # the pydantic contract
 ├── errors.py        # exception hierarchy
 └── progress.py      # stderr stage logging with timings
 tests/               # router, slide dedup (synthetic hashes), scanned-page detector,
-                     # schema validation, local-LLM client, multi-call understanding
-                     # (mocked), and an end-to-end PDF smoke test
+                     # schema validation, Gemini client (no network), multi-call
+                     # understanding (mocked), and an end-to-end PDF smoke test
 ```
 
 ## Tests
@@ -187,4 +168,4 @@ tests/               # router, slide dedup (synthetic hashes), scanned-page dete
 pytest
 ```
 
-The unit tests run without any heavy dependencies or a running Ollama (LLM calls are mocked or pointed at a closed port). The PDF smoke test generates a small digital PDF with PyMuPDF and runs the real CLI end to end; it skips itself if PyMuPDF is absent.
+The tests run without any heavy dependencies, a network connection, or an API key (LLM calls are mocked; the no-key fallback path is exercised for real). The PDF smoke test generates a small digital PDF with PyMuPDF and runs the real CLI end to end; it skips itself if PyMuPDF is absent.

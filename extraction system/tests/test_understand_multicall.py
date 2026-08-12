@@ -1,4 +1,4 @@
-"""The multi-call understanding flow, with the local LLM mocked out.
+"""The multi-call understanding flow, with the Gemini client mocked out.
 
 Verifies that one summary call is made per section plus one call each for
 document info, chapters, key concepts, and the global summary — and that
@@ -57,7 +57,7 @@ def _pdf_sections():
 
 
 class FakeChat:
-    """Stands in for local_llm.chat; dispatches on the schema's model title."""
+    """Stands in for gemini_llm.chat; dispatches on the schema's model title."""
 
     def __init__(self, video=True, chapters_responses=None):
         self.video = video
@@ -98,7 +98,7 @@ class FakeChat:
 
 def test_multicall_assembly_video(monkeypatch):
     fake = FakeChat(video=True)
-    monkeypatch.setattr(understand.local_llm, "chat", fake)
+    monkeypatch.setattr(understand.gemini_llm, "chat", fake)
 
     response = understand.run_understanding(_video_sections(), source_type="video")
 
@@ -116,7 +116,7 @@ def test_multicall_assembly_video(monkeypatch):
 
 def test_multicall_pdf_locations_use_pages(monkeypatch):
     fake = FakeChat(video=False)
-    monkeypatch.setattr(understand.local_llm, "chat", fake)
+    monkeypatch.setattr(understand.gemini_llm, "chat", fake)
 
     response = understand.run_understanding(_pdf_sections(), source_type="pdf")
 
@@ -134,7 +134,7 @@ def test_structured_call_retries_once_then_succeeds(monkeypatch):
             json.dumps({"chapters": [{"title": "Recovered", "start_seconds": 5.0}]}),
         ],
     )
-    monkeypatch.setattr(understand.local_llm, "chat", fake)
+    monkeypatch.setattr(understand.gemini_llm, "chat", fake)
 
     response = understand.run_understanding(_video_sections(), source_type="video")
     assert response.chapters[0].title == "Recovered"
@@ -146,7 +146,7 @@ def test_structured_call_retries_once_then_succeeds(monkeypatch):
 
 def test_structured_call_fails_loudly_after_second_bad_response(monkeypatch):
     fake = FakeChat(video=True, chapters_responses=["bad", "still bad"])
-    monkeypatch.setattr(understand.local_llm, "chat", fake)
+    monkeypatch.setattr(understand.gemini_llm, "chat", fake)
 
     with pytest.raises(UnderstandingError, match="malformed chapters twice"):
         understand.run_understanding(_video_sections(), source_type="video")
@@ -156,7 +156,7 @@ def test_empty_sections_short_circuits(monkeypatch):
     def explode(*args, **kwargs):
         raise AssertionError("no LLM call expected for empty input")
 
-    monkeypatch.setattr(understand.local_llm, "chat", explode)
+    monkeypatch.setattr(understand.gemini_llm, "chat", explode)
     response = understand.run_understanding([], source_type="pdf")
     assert response.one_liner == "Empty document."
     assert response.section_summaries == []

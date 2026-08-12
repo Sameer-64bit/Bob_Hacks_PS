@@ -17,8 +17,8 @@ class OCRUnavailableError(LectraError):
     """PaddleOCR is not installed or could not be initialised."""
 
 
-class LocalLLMError(LectraError):
-    """The local LLM (Ollama) could not be reached or returned an error."""
+class LLMError(LectraError):
+    """The Gemini API could not be reached or returned an error."""
 
 
 class VisionError(LectraError):

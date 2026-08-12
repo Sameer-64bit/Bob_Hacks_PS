@@ -1,6 +1,5 @@
-"""Understanding layer on the local 7B thinking model — decomposed into
-MULTIPLE small calls, because a 7B model cannot digest a whole lecture in one
-giant structured request:
+"""Understanding layer on the Gemini API — decomposed into MULTIPLE small
+calls, which keeps every request focused and rate-limit friendly:
 
   1. one summary call per section            (plain text)
   2. document info: one-liner + language     (schema-constrained JSON)
@@ -8,10 +7,11 @@ giant structured request:
   4. key concepts with first-seen locations  (schema-constrained JSON)
   5. global summary                          (plain text)
 
-Structured calls constrain generation with a JSON schema (Ollama `format`),
-validate with pydantic, retry once with the error message, then fail loudly —
-per the contract. When the local LLM is unavailable, build_fallback_summary
-produces a valid (if modest) Summary locally instead of crashing.
+Structured calls constrain generation with a JSON schema (Gemini
+responseSchema), validate with pydantic, retry once with the error message,
+then fail loudly — per the contract. When the API is unavailable,
+build_fallback_summary produces a valid (if modest) Summary locally instead
+of crashing.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Sequence
 
 from pydantic import BaseModel, ValidationError
 
-from . import local_llm
+from . import gemini_llm
 from .errors import UnderstandingError
 from .progress import log, warn
 from .schema import (
@@ -34,7 +34,7 @@ from .schema import (
     UnderstandingResponse,
 )
 
-MAX_VISUAL_CHARS = 3500  # per-call caps keep every request 7B-sized
+MAX_VISUAL_CHARS = 3500  # per-call caps keep every request small and focused
 MAX_SPOKEN_CHARS = 3500
 MAX_OVERVIEW_CHARS = 16000
 
@@ -151,12 +151,12 @@ def _build_overview(
 
 
 def _text_call(prompt: str, *, what: str, num_predict: int = 4096) -> str:
-    result = local_llm.chat(prompt, num_predict=num_predict).strip()
+    result = gemini_llm.chat(prompt, num_predict=num_predict).strip()
     if result:
         return result
     warn(f"{what}: the model returned an empty response, retrying once")
     retry_prompt = prompt + "\n\nYour previous response was empty. Respond with the requested text only."
-    result = local_llm.chat(retry_prompt, num_predict=num_predict).strip()
+    result = gemini_llm.chat(retry_prompt, num_predict=num_predict).strip()
     if result:
         return result
     raise UnderstandingError(f"The local LLM returned an empty {what} twice; giving up.")
@@ -177,7 +177,7 @@ def _structured_call(prompt: str, response_model: type[BaseModel], *, what: str)
     schema = response_model.model_json_schema()
 
     def attempt(current_prompt: str):
-        raw = local_llm.chat(current_prompt, schema=schema)
+        raw = gemini_llm.chat(current_prompt, schema=schema)
         try:
             return response_model.model_validate_json(_extract_json(raw))
         except ValidationError as exc:
@@ -374,9 +374,9 @@ def build_fallback_summary(
     global_text = (
         f"Automatically extracted structure of {source_name} "
         f"({len(sections)} sections, source type: {source_type}). "
-        "No LLM summarization was performed because the local LLM was unavailable; "
-        f"start Ollama (`ollama serve`), pull the model (`ollama pull {local_llm.model_name()}`), "
-        "and re-run for full summaries, key concepts, and chapters. "
+        "No LLM summarization was performed because the Gemini API was unavailable; "
+        "set the GEMINI_API_KEY environment variable and re-run for full summaries, "
+        "key concepts, and chapters. "
         f"Extracted sections include: {titles}."
     )
     return Summary(
