@@ -20,15 +20,24 @@ flutter pub get
 flutter run           # pick a device: Chrome, Android, iOS, macOS…
 ```
 
-### AI slide translate/describe (optional)
+### AI slide translate/describe (SmolVLM proxy)
 
-The student "Translate slide" / "Describe slide" buttons use Google Gemini.
-Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and pass it at build time
-(don't commit it — GitHub will block the push):
+The student "Translate slide" / "Describe slide" buttons call a small local
+VLM server ([vlm_server.py](vlm_server.py)). Run the v3 schema first
+([`supabase/schema_v3.sql`](supabase/schema_v3.sql) in the SQL Editor), then on any machine on
+the network:
 
 ```bash
-flutter run --dart-define=GEMINI_API_KEY=your-key-here
+pip install torch transformers pillow fastapi uvicorn loguru
+python vlm_server.py
 ```
+
+The server announces its current IP to Supabase every 20 seconds, so the app
+finds it automatically — no hardcoded IPs, and wifi IP changes heal
+themselves. (Optional override: `flutter run --dart-define=AI_SERVER_URL=http://ip:5000`.)
+
+Translation is two-step: SmolVLM transcribes the slide (English), then the
+free MyMemory API translates into the student's chosen language.
 
 For the smart board (People's Link panels run Android/Windows):
 

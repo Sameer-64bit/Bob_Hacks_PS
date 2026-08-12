@@ -4,6 +4,7 @@ import '../../config.dart';
 import '../../data/languages.dart';
 import '../../models/models.dart';
 import '../../services/ai.dart';
+import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../theme.dart';
@@ -36,6 +37,23 @@ class _LiveBoardViewState extends State<LiveBoardView> {
   String _language = 'en';
   bool _handCooldown = false;
   final _chat = TextEditingController();
+  List<BoardSlide> _slides = [];
+
+  Future<void> _sharePdf() async {
+    try {
+      final ok = await BoardPdf.share(
+        slides: _slides,
+        title: 'Kaksha · ${classroomLabel(widget.classroom)}',
+        fileName: 'kaksha-board-${widget.classroom.code.toLowerCase()}.pdf',
+      );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Nothing to export yet — the board is empty.')));
+      }
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
 
   @override
   void initState() {
@@ -95,7 +113,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
   }
 
   Future<void> _runAi(BoardSlide slide, {required bool translateMode}) async {
-    final language = languageByCode(_language).name;
+    final language = languageByCode(_language);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -103,7 +121,9 @@ class _LiveBoardViewState extends State<LiveBoardView> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => _AiSheet(
-        title: translateMode ? 'Translated to $language' : 'Slide described',
+        title: translateMode
+            ? 'Translated to ${language.name}'
+            : 'Slide described',
         future: translateMode
             ? SlideAi.translate(slide, language)
             : SlideAi.describe(slide, language),
@@ -130,6 +150,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                   child: CircularProgressIndicator(color: Palette.marigold));
             }
             final slides = snapshot.data!;
+            _slides = slides;
             if (slides.isEmpty) {
               return _emptyState();
             }
@@ -256,6 +277,12 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                   : () => showError(context,
                       'Add a Gemini API key in lib/config.dart to enable AI.'),
               icon: const Icon(Icons.auto_awesome, color: Colors.white70, size: 20),
+            ),
+            IconButton(
+              tooltip: 'Share board as PDF',
+              onPressed: _sharePdf,
+              icon: const Icon(Icons.picture_as_pdf_outlined,
+                  color: Colors.white70, size: 20),
             ),
           ],
           const SizedBox(width: 8),

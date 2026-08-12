@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../models/models.dart';
 import '../../models/models2.dart';
+import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../theme.dart';
@@ -323,6 +324,32 @@ class _BoardScreenState extends State<BoardScreen> {
     }
   }
 
+  Future<void> _sharePdf() async {
+    final board = _board;
+    if (board == null) return;
+    final classroom = widget.classroom;
+    final label =
+        classroom == null ? 'Practice board' : classroomLabel(classroom);
+    final fileName =
+        'kaksha-board-${classroom?.code.toLowerCase() ?? 'practice'}.pdf';
+    try {
+      final ok = await BoardPdf.share(
+        slides: board.slides,
+        title: 'Kaksha · $label',
+        fileName: fileName,
+      );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Nothing to export yet — the board is empty.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not build PDF: $e')));
+      }
+    }
+  }
+
   // ------------------------------------------------------------------- build
 
   @override
@@ -390,6 +417,7 @@ class _BoardScreenState extends State<BoardScreen> {
                   onZoomOut: () => _zoomAt(
                       Offset(_viewport.width / 2, _viewport.height / 2), 0.84),
                   onFit: () => setState(_fit),
+                  onSharePdf: _sharePdf,
                   scale: _scale,
                 ),
                 Expanded(
@@ -587,6 +615,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
   final VoidCallback onFit;
+  final VoidCallback onSharePdf;
 
   const _TopBar({
     required this.board,
@@ -596,6 +625,7 @@ class _TopBar extends StatelessWidget {
     required this.onZoomIn,
     required this.onZoomOut,
     required this.onFit,
+    required this.onSharePdf,
   });
 
   @override
@@ -750,6 +780,11 @@ class _TopBar extends StatelessWidget {
                 );
                 if (ok == true) board.clearSlide();
               },
+            ),
+            _ActionButton(
+              icon: Icons.picture_as_pdf_outlined,
+              label: 'Share board as PDF',
+              onTap: onSharePdf,
             ),
             const SizedBox(width: 10),
           ],

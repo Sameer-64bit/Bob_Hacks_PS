@@ -1,0 +1,13 @@
+# Core runtime dependencies (pip mirror of pyproject.toml).
+# Optional extras — see README:
+#   OCR (fast mode + raw text fallback):  pip install "paddleocr>=2.7,<3" paddlepaddle
+#   Dev/tests:                            pip install pytest
+# LLM backends: local Ollama, or the Gemini API when GEMINI_API_KEY is set.
+# Both use the stdlib HTTP client — no API SDK needed.
+pydantic>=2.7
+certifi>=2024.0
+faster-whisper>=1.0
+opencv-python>=4.9
+imagehash>=4.3
+Pillow>=10.0
+PyMuPDF>=1.24

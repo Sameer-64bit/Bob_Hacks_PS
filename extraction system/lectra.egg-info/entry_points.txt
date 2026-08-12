@@ -1,0 +1,2 @@
+[console_scripts]
+lectra = lectra.cli:main

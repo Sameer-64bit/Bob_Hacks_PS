@@ -1,0 +1,76 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+/// Free text translation via the MyMemory API (no key needed, CORS-friendly,
+/// works from web builds). The small VLM only reads/writes English well, so
+/// its output is piped through this to reach the student's language.
+class Translator {
+  static const _endpoint = 'https://api.mymemory.translated.net/get';
+
+  /// MyMemory rejects queries longer than ~500 bytes, so long slide text is
+  /// split into chunks at line/sentence boundaries and re-joined.
+  static List<String> chunkText(String text, {int maxLen = 450}) {
+    final chunks = <String>[];
+    var buffer = StringBuffer();
+
+    void flush() {
+      if (buffer.isNotEmpty) {
+        chunks.add(buffer.toString());
+        buffer = StringBuffer();
+      }
+    }
+
+    // Prefer newline boundaries, then sentence boundaries, then hard cuts.
+    for (final line in text.split('\n')) {
+      final pieces = line.length <= maxLen
+          ? [line]
+          : line
+              .split(RegExp(r'(?<=[.!?])\s+'))
+              .expand((s) sync* {
+                for (var i = 0; i < s.length; i += maxLen) {
+                  yield s.substring(
+                      i, i + maxLen > s.length ? s.length : i + maxLen);
+                }
+              })
+              .toList();
+      for (final piece in pieces) {
+        if (buffer.length + piece.length + 1 > maxLen) flush();
+        if (buffer.isNotEmpty) {
+          buffer.write(piece == pieces.first && line != piece ? ' ' : '\n');
+        }
+        buffer.write(piece);
+      }
+      flush(); // keep original line structure
+    }
+    flush();
+    return chunks.where((c) => c.trim().isNotEmpty).toList();
+  }
+
+  /// Translates [text] from English into [targetCode] (e.g. 'hi').
+  /// Returns the input untouched when the target is English.
+  static Future<String> translate(String text, String targetCode) async {
+    if (targetCode == 'en' || text.trim().isEmpty) return text;
+    final results = <String>[];
+    for (final chunk in chunkText(text)) {
+      final uri = Uri.parse(_endpoint).replace(queryParameters: {
+        'q': chunk,
+        'langpair': 'en|$targetCode',
+      });
+      final response = await http.get(uri);
+      if (response.statusCode != 200) {
+        throw Exception(
+            'Translation service unavailable (HTTP ${response.statusCode}).');
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final translated =
+          data['responseData']?['translatedText'] as String? ?? '';
+      if (translated.isEmpty ||
+          (data['responseStatus'] != 200 && data['responseStatus'] != '200')) {
+        throw Exception('Translation failed — try again in a moment.');
+      }
+      results.add(translated);
+    }
+    return results.join('\n');
+  }
+}

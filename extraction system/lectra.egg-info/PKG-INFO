@@ -1,0 +1,177 @@
+Metadata-Version: 2.4
+Name: lectra
+Version: 0.1.0
+Summary: Extract the full content, structure, and summary of lecture videos and PDFs into one unified JSON format.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.7
+Requires-Dist: anthropic>=0.116.0
+Requires-Dist: faster-whisper>=1.0
+Requires-Dist: opencv-python>=4.9
+Requires-Dist: imagehash>=4.3
+Requires-Dist: Pillow>=10.0
+Requires-Dist: PyMuPDF>=1.24
+Provides-Extra: ocr
+Requires-Dist: paddleocr<3.0,>=2.7; extra == "ocr"
+Requires-Dist: paddlepaddle>=2.6; extra == "ocr"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+
+# lectra
+
+`lectra` turns a **lecture video** or a **PDF** into one structured JSON file containing the full content, structure, and summary of the input — with mathematical notation preserved as LaTeX and code kept in fenced blocks.
+
+```
+lectra process <input_file> [--output out.json] [--mode fast|deep]
+```
+
+Both pipelines emit the **same unified JSON schema** (validated with pydantic before writing), so downstream code never needs to know whether the source was a video or a PDF.
+
+## How it works
+
+**Video** (`.mp4` `.mkv` `.mov` `.webm` `.avi`):
+
+1. ffmpeg extracts 16 kHz mono audio.
+2. faster-whisper (`small`, int8, VAD) produces a timestamped transcript.
+3. OpenCV samples a frame every 2 s; perceptual hashes (phash) detect slide changes; revisited slides are deduplicated — each unique slide keeps *all* of its appearance time ranges and is saved as `slide_001.png`, … in an assets folder.
+4. Slide content: **fast** mode runs PaddleOCR; **deep** mode (default) sends each slide to the Claude API for structured markdown (title, bullet hierarchy, equations in LaTeX, code in fenced blocks, one-line figure descriptions). Raw OCR text is always kept as a fallback.
+5. Transcript segments are aligned to the slide on screen when they were spoken.
+6. The whole aligned document goes through the understanding layer (Claude): global summary, key concepts with first-seen timestamps, chapter markers, per-section summaries.
+
+**PDF**:
+
+1. PyMuPDF opens the file; a page with fewer than 20 characters of text *and* at least one image is classified as **scanned**.
+2. Digital pages: font-size information turns large spans into markdown headings; text becomes clean per-page markdown.
+3. Scanned pages: rendered to PNG at 200 dpi, then OCR (fast) or Claude vision (deep) — same backends and LaTeX-preservation rules as video slides.
+4. Understanding layer as above, with page numbers instead of timestamps.
+
+## Install
+
+Python **3.11+** is required. Either `uv` or plain `venv`+`pip` works — dependencies live in `pyproject.toml` with a mirrored `requirements.txt`.
+
+**1. ffmpeg** (needed for video inputs):
+
+```bash
+brew install ffmpeg        # macOS
+sudo apt install ffmpeg    # Debian/Ubuntu
+```
+
+**2. The package** — with `uv`:
+
+```bash
+cd "extraction system"
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
+or with plain pip:
+
+```bash
+cd "extraction system"
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e ".[dev]"        # installs the `lectra` command + pytest
+```
+
+**3. OCR (optional but recommended)** — PaddleOCR powers `--mode fast` and the always-kept `raw_ocr_text` fallback. Its wheels are platform-sensitive, so it ships as an extra:
+
+```bash
+pip install -e ".[ocr]"        # paddleocr + paddlepaddle
+```
+
+Without it, lectra still runs: it warns and leaves `raw_ocr_text` empty (digital-PDF text and video transcripts are unaffected).
+
+**4. API key** — deep mode and the understanding layer use the Claude API:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+If the key is missing, lectra **does not crash**: it warns, drops to fast mode, and writes a locally generated fallback summary.
+
+First-run downloads: faster-whisper fetches the `small` model (~460 MB) and PaddleOCR fetches its recognition models.
+
+## Usage
+
+Video (deep mode is the default):
+
+```bash
+lectra process lecture.mp4 --output lecture.json
+```
+
+PDF, OCR-only:
+
+```bash
+lectra process paper.pdf --mode fast -o paper.json
+```
+
+Output defaults to `<input>.lectra.json` next to the input. Extracted images land in `<output basename>.assets/` (`slide_001.png` for video, `page_003.png` for scanned PDF pages); `--assets-dir` overrides this. Asset paths inside the JSON are relative to the JSON file. For video, `--hash-threshold` (default 10) and `--sample-interval` (default 2.0 s) tune slide detection.
+
+Progress for every stage — and how long it took — is printed to **stderr**; the only thing on stdout is the output path, so the command composes in scripts.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `ANTHROPIC_API_KEY` | Enables deep mode + the understanding layer |
+| `LECTRA_MODEL` | Claude model id (default `claude-opus-5`; e.g. `claude-sonnet-5` for cheaper runs) |
+
+## Output schema (contract)
+
+```jsonc
+{
+  "meta":    { "source_file", "source_type", "duration_seconds", "page_count",
+               "language", "mode", "processed_at", "tool_version" },
+  "summary": { "global", "one_liner",
+               "key_concepts": [{ "concept", "explanation", "first_seen": {"timestamp", "page"} }],
+               "chapters":     [{ "title", "start": {"timestamp", "page"} }] },
+  "sections": [{ "id", "kind",                       // "slide" | "page" | "heading_section"
+                 "title",
+                 "location": { "timestamp_ranges",   // all appearances; null for pdf
+                               "pages" },            // page numbers; null for video
+                 "visual_content_markdown",          // LaTeX math, fenced code, figure notes
+                 "raw_ocr_text",                     // always kept, even in deep mode
+                 "spoken_content": [{ "start", "end", "text" }],   // [] for pdf
+                 "section_summary",
+                 "asset_path" }],                    // null if no image saved
+  "transcript": [{ "start", "end", "text" }]         // [] for pdf
+}
+```
+
+Timestamps are seconds as floats. The document is validated against the pydantic models in `lectra/schema.py` before the file is written; if the LLM returns malformed output, lectra retries once with the error message, then fails loudly.
+
+## Graceful degradation
+
+| Situation | Behavior |
+|---|---|
+| `--mode deep`, no `ANTHROPIC_API_KEY` | Warn → fall back to fast mode + local fallback summary |
+| `--mode fast`, key present | OCR content, but the understanding layer still runs (it is text-only) |
+| PaddleOCR not installed | Warn once; `raw_ocr_text` empty; pipeline continues |
+| ffmpeg missing (video input) | Clear fatal error with install instructions |
+| Video has no audio stream | Warn; empty transcript; slides still processed |
+| One slide's vision call fails/refused | Warn; that slide falls back to OCR text |
+
+## Project layout
+
+```
+lectra/
+├── cli.py           # argparse entry point (`lectra process ...`)
+├── router.py        # extension → video | pdf
+├── video.py         # ffmpeg → whisper → phash slides → dedup → align
+├── pdf_pipeline.py  # page routing, heading-aware markdown, 200dpi renders
+├── vision.py        # shared PaddleOCR + Claude vision (used by BOTH pipelines)
+├── understand.py    # understanding layer + strict-JSON retry + offline fallback
+├── schema.py        # the pydantic contract
+├── errors.py        # exception hierarchy
+└── progress.py      # stderr stage logging with timings
+tests/               # router, slide dedup (synthetic hashes), scanned-page
+                     # detector, schema validation, and an end-to-end PDF smoke test
+```
+
+## Tests
+
+```bash
+pytest
+```
+
+The unit tests run without any heavy dependencies installed (cv2, whisper, paddle, and the API are only imported at call time). The PDF smoke test generates a small digital PDF with PyMuPDF and runs the real CLI end to end; it skips itself if PyMuPDF is absent.
