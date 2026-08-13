@@ -140,6 +140,49 @@ def compose_notes(title, slide_summaries, per_slide_transcript, unassigned, lang
 
 
 # ---------------------------------------------------------------------------
+# Caption post-processing: whisper sometimes returns one huge segment for a
+# whole lecture (noisy/compressed audio + translate mode). Split oversized
+# segments into sentence-level lines with interpolated timestamps so the
+# player gets real, synced subtitles instead of a single wall of text.
+# ---------------------------------------------------------------------------
+
+def split_caption_segments(segments, max_chars=90, max_seconds=8.0):
+    out = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        start = float(seg.get("start", 0))
+        end = float(seg.get("end", start))
+        duration = max(end - start, 0.0)
+        if not text:
+            continue
+        if len(text) <= max_chars and duration <= max_seconds:
+            out.append({"start": start, "end": end, "text": text})
+            continue
+        # Group sentences into readable lines.
+        pieces, buf = [], ""
+        for sentence in split_sentences(text) or [text]:
+            if len(buf) + len(sentence) + 1 > max_chars and buf:
+                pieces.append(buf)
+                buf = sentence
+            else:
+                buf = f"{buf} {sentence}".strip()
+        if buf:
+            pieces.append(buf)
+        # Allocate time proportionally to text length.
+        total_chars = sum(len(p) for p in pieces) or 1
+        cursor = start
+        for piece in pieces:
+            share = duration * len(piece) / total_chars
+            out.append({
+                "start": round(cursor, 2),
+                "end": round(cursor + share, 2),
+                "text": piece,
+            })
+            cursor += share
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Retrieval for the lecture chatbot: rank material chunks by relevance to
 # the question so the small chat model sees the RIGHT context, not a wall
 # of text it will ignore.

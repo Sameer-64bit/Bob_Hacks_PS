@@ -103,6 +103,24 @@ def test_retrieval_picks_relevant_chunks():
     assert retrieve_context("zzzz qqqq", [material], top_k=1)  # fallback
 
 
+def test_caption_splitter_breaks_giant_segments():
+    from notes_pipeline import split_caption_segments
+
+    big = [{"start": 0.0, "end": 60.0, "text": (
+        "The window object has many methods. Alert shows a message on screen. "
+        "Blur removes focus from the current window. SetInterval keeps executing "
+        "code at a certain interval. SetTimeout executes code after a delay.")}]
+    out = split_caption_segments(big)
+    assert len(out) >= 3
+    assert abs(out[-1]["end"] - 60.0) < 0.5
+    for a, b in zip(out, out[1:]):
+        assert a["end"] <= b["start"] + 0.01
+    # short segments pass through untouched
+    assert split_caption_segments(
+        [{"start": 1, "end": 3, "text": "Hello class."}]) == [
+        {"start": 1.0, "end": 3.0, "text": "Hello class."}]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

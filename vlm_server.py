@@ -143,7 +143,7 @@ def generate(req: GenerateRequest):
 
 import tempfile
 
-from notes_pipeline import align_segments, compose_notes, gemini_enhance, wiki_enrich
+from notes_pipeline import align_segments, compose_notes, gemini_enhance, split_caption_segments, wiki_enrich
 
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")  # better Hindi/multilingual; use base/tiny for speed
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -226,12 +226,14 @@ def _transcribe(req: EndClassRequest):
     with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
         f.write(audio_bytes)
         path = f.name
-    segments, info = get_whisper().transcribe(path, vad_filter=True, task="translate")
-    out = [
+    segments, info = get_whisper().transcribe(
+        path, vad_filter=True, task="translate",
+        condition_on_previous_text=False)
+    out = split_caption_segments([
         {"start": float(s.start), "end": float(s.end), "text": s.text}
         for s in segments
-    ]
-    logger.info(f"Transcribed {len(out)} segments ({info.language}, {info.duration:.0f}s)")
+    ])
+    logger.info(f"Transcribed {len(out)} lines ({info.language}, {info.duration:.0f}s)")
     return out
 
 
@@ -357,10 +359,16 @@ def _process_live_chunk(req: LiveChunkRequest):
         with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
             f.write(audio)
             path = f.name
-        segments, _info = get_whisper().transcribe(path, vad_filter=True, task="translate")
+        segments, _info = get_whisper().transcribe(
+            path, vad_filter=True, task="translate",
+            condition_on_previous_text=False)
+        segments = split_caption_segments([
+            {"start": float(s.start), "end": float(s.end), "text": s.text}
+            for s in segments
+        ])
         rows = []
         for s in segments:
-            text = s.text.strip()
+            text = s["text"].strip()
             if not text:
                 continue
             rows.append(
@@ -369,8 +377,8 @@ def _process_live_chunk(req: LiveChunkRequest):
                     "classroom_id": req.classroom_id,
                     "slide_index": req.slide_index,
                     "chunk_index": req.chunk_index,
-                    "start_s": req.offset_s + float(s.start),
-                    "end_s": req.offset_s + float(s.end),
+                    "start_s": req.offset_s + s["start"],
+                    "end_s": req.offset_s + s["end"],
                     "text": text,
                 }
             )
@@ -543,11 +551,13 @@ def _process_lecture_media(req: LectureMediaRequest):
         with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
             f.write(audio)
             path = f.name
-        raw, info = get_whisper().transcribe(path, vad_filter=True, task="translate")
-        segments = [
+        raw, info = get_whisper().transcribe(
+            path, vad_filter=True, task="translate",
+            condition_on_previous_text=False)
+        segments = split_caption_segments([
             {"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
             for s in raw
-        ]
+        ])
         logger.info(
             f"Lecture video: {len(segments)} segments ({info.duration:.0f}s)")
         try:
