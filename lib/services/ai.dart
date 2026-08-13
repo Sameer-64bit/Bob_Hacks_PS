@@ -1,13 +1,11 @@
 import 'dart:convert';
-import 'dart:ui' as ui;
 
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/languages.dart';
 import '../models/models.dart';
-import '../screens/board/board_controller.dart';
-import '../screens/board/board_painter.dart';
+import 'slide_raster.dart';
 import 'translator.dart';
 
 /// Slide AI backed by the SmolVLM proxy (vlm_server.py) running somewhere on
@@ -59,28 +57,10 @@ class SlideAi {
     return _cachedUrl ?? _fallbackServerUrl;
   }
 
-  /// Renders a slide's strokes to a PNG (half canvas resolution keeps the
-  /// payload small while staying readable).
-  static Future<String> renderSlideBase64(BoardSlide slide) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
-    const scale = 0.5;
-    canvas.scale(scale);
-    canvas.drawRect(
-      ui.Rect.fromLTWH(0, 0, kCanvasSize.width, kCanvasSize.height),
-      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-    );
-    for (final stroke in slide.strokes) {
-      paintStroke(canvas, stroke);
-    }
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      (kCanvasSize.width * scale).round(),
-      (kCanvasSize.height * scale).round(),
-    );
-    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-    return base64Encode(bytes!.buffer.asUint8List());
-  }
+  /// Renders a slide (background image included) to a PNG at half canvas
+  /// resolution — small payload, still readable for the VLM.
+  static Future<String> renderSlideBase64(BoardSlide slide) async =>
+      base64Encode(await SlideRaster.png(slide, scale: 0.5));
 
   /// The raw HTTP call to the proxy — reusable for translation, description…
   static Future<String> _ask(BoardSlide slide, String prompt) async {

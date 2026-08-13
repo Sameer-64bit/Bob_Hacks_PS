@@ -7,6 +7,7 @@ import '../../models/models3.dart';
 import '../../screens/board/board_painter.dart';
 import '../../services/notes_pdf.dart';
 import '../../services/repository.dart';
+import '../../services/repository3.dart';
 import '../../services/repository4.dart';
 import '../../services/translator.dart';
 import '../../theme.dart';
@@ -55,6 +56,15 @@ class _NotesScreenState extends State<NotesScreen> {
   Future<void> _translate() async {
     final code = widget.languageCode;
     if (code == 'en') return;
+
+    // Translated once already? Use the cached copy — instant.
+    final cached = widget.notes.translations[code];
+    if (cached is Map) {
+      setState(() => _translated =
+          widget.notes.withNotesJson(cached.cast<String, dynamic>()));
+      return;
+    }
+
     setState(() => _translating = true);
     try {
       final n = widget.notes;
@@ -112,6 +122,11 @@ class _NotesScreenState extends State<NotesScreen> {
         ],
       );
       if (mounted) setState(() => _translated = translated);
+      // Save for everyone — next open of these notes skips translation.
+      try {
+        await repo.saveNotesTranslation(
+            widget.notes.id, code, translated.notesJson());
+      } catch (_) {}
     } catch (_) {
       // Translation is best-effort — English notes still show.
     } finally {
@@ -205,11 +220,19 @@ class _NotesScreenState extends State<NotesScreen> {
                   ],
                 ),
               ),
+              const SizedBox(height: 14),
+              _StatRow(notes: notes),
               if (notes.simplifiedSummary.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 const SectionTitle('In one line'),
                 const SizedBox(height: 8),
                 Text(notes.simplifiedSummary, style: text.bodyLarge),
+              ],
+              if (_talkWords(notes).any((w) => w > 0)) ...[
+                const SizedBox(height: 20),
+                const SectionTitle('Where the class time went'),
+                const SizedBox(height: 8),
+                _TalkTimeChart(notes: notes),
               ],
               if (notes.perSlide.length > 1) ...[
                 const SizedBox(height: 20),
@@ -244,6 +267,146 @@ class _NotesScreenState extends State<NotesScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+List<int> _talkWords(ClassNotes notes) => [
+      for (final s in notes.perSlide)
+        s.transcript.trim().isEmpty
+            ? 0
+            : s.transcript.trim().split(RegExp(r'\s+')).length,
+    ];
+
+/// Headline numbers for the class, tile style.
+class _StatRow extends StatelessWidget {
+  final ClassNotes notes;
+  const _StatRow({required this.notes});
+
+  @override
+  Widget build(BuildContext context) {
+    final words = _talkWords(notes).fold<int>(0, (a, b) => a + b);
+    final minutes = (words / 130).ceil(); // ~130 spoken words per minute
+    final concepts =
+        notes.keyConcepts.length + notes.technicalTerms.length;
+
+    Widget tile(String value, String label, IconData icon) => Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              color: Palette.card,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Palette.line),
+            ),
+            child: Column(
+              children: [
+                Icon(icon, size: 16, color: Palette.faint),
+                const SizedBox(height: 6),
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Palette.dark)),
+                const SizedBox(height: 2),
+                Text(label,
+                    style:
+                        const TextStyle(fontSize: 11, color: Palette.faint)),
+              ],
+            ),
+          ),
+        );
+
+    return Row(
+      children: [
+        tile('${notes.perSlide.length}', 'slides', Icons.layers_outlined),
+        const SizedBox(width: 10),
+        tile(words == 0 ? '—' : '~$minutes min', 'spoken',
+            Icons.record_voice_over_outlined),
+        const SizedBox(width: 10),
+        tile('$concepts', 'concepts', Icons.lightbulb_outline),
+      ],
+    );
+  }
+}
+
+/// How much the teacher spoke on each slide — single-hue horizontal bars,
+/// baseline-anchored with rounded data ends and direct value labels.
+class _TalkTimeChart extends StatelessWidget {
+  final ClassNotes notes;
+  const _TalkTimeChart({required this.notes});
+
+  @override
+  Widget build(BuildContext context) {
+    final words = _talkWords(notes);
+    final maxWords = words.fold<int>(1, (a, b) => a > b ? a : b);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Palette.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Palette.line),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < words.length; i++)
+            Padding(
+              padding: EdgeInsets.only(
+                  bottom: i == words.length - 1 ? 0 : 8),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 52,
+                    child: Text('Slide ${i + 1}',
+                        style: const TextStyle(
+                            fontSize: 11.5, color: Palette.faint)),
+                  ),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => Stack(
+                        children: [
+                          Container(
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: Palette.paper,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                          AnimatedContainer(
+                            duration:
+                                const Duration(milliseconds: 500),
+                            curve: Curves.easeOutCubic,
+                            height: 12,
+                            width: words[i] == 0
+                                ? 0
+                                : (constraints.maxWidth *
+                                        words[i] /
+                                        maxWords)
+                                    .clamp(4.0, constraints.maxWidth),
+                            decoration: const BoxDecoration(
+                              color: Palette.navy,
+                              borderRadius: BorderRadius.horizontal(
+                                  right: Radius.circular(4)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 56,
+                    child: Text(
+                      words[i] == 0 ? 'quiet' : '${words[i]} words',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 10.5, color: Palette.faint),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }

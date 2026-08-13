@@ -224,12 +224,13 @@ class Repository {
         BoardSlide(
           dbId: r['id'] as String,
           index: (r['slide_index'] as num).toInt(),
+          backgroundUrl: r['background_url'] as String?,
           strokes: [
             for (final s in (r['strokes'] as List))
               Stroke.fromJson(Map<String, dynamic>.from(s as Map)),
           ],
         ),
-    ];
+    ]..sort((a, b) => a.index.compareTo(b.index));
   }
 
   Future<void> saveSlide(String classroomId, BoardSlide slide) async {

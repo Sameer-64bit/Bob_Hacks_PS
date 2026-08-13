@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:cross_file/cross_file.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:printing/printing.dart';
 import 'package:record/record.dart';
 
 import '../../models/models.dart';
@@ -459,7 +461,10 @@ class _BoardScreenState extends State<BoardScreen> {
       final strokeCounts = <int>[];
       for (final slide in board.slides) {
         slides.add(await SlideAi.renderSlideBase64(slide));
-        strokeCounts.add(slide.strokes.length);
+        // Imported PDF pages carry real content even with zero strokes —
+        // report them as dense so the VLM reads them.
+        strokeCounts.add(
+            slide.backgroundUrl != null ? 999 : slide.strokes.length);
       }
 
       // 3. Hand everything to the proxy — it updates progress from here on.
@@ -558,6 +563,55 @@ class _BoardScreenState extends State<BoardScreen> {
         setState(() => _endingClass = false);
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Could not start a new board: $e')));
+      }
+    }
+  }
+
+  /// Imports a PDF from storage: each page becomes a slide background the
+  /// teacher can draw on top of.
+  Future<void> _importPdf() async {
+    final classroom = widget.classroom;
+    final session = _session;
+    final board = _board;
+    if (classroom == null || session == null || board == null) return;
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
+      final bytes = picked?.files.single.bytes;
+      if (bytes == null) return;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Importing PDF pages onto the board…')));
+
+      var imported = 0;
+      await for (final page in Printing.raster(bytes, dpi: 110)) {
+        if (imported >= 40) break; // sanity cap
+        final png = await page.toPng();
+        final path = await repo.uploadMedia(
+            bytes: png, extension: 'png', contentType: 'image/png');
+        final slide = BoardSlide(
+          index: board.slides.length,
+          backgroundUrl: repo.mediaUrl(path),
+        );
+        board.appendSlide(slide);
+        await repo.saveSessionSlide(classroom.id, session.id, slide);
+        imported++;
+        if (mounted) setState(() {});
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(imported == 0
+                ? 'Could not read any pages from that PDF.'
+                : '$imported PDF pages added — draw right on top of them.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('PDF import failed: $e')));
       }
     }
   }
@@ -663,6 +717,7 @@ class _BoardScreenState extends State<BoardScreen> {
                   onHistory: widget.classroom == null
                       ? null
                       : () => showBoardHistory(context, widget.classroom!),
+                  onImportPdf: widget.classroom == null ? null : _importPdf,
                 ),
                 Expanded(
                   child: Row(
@@ -739,7 +794,8 @@ class _BoardScreenState extends State<BoardScreen> {
                           ),
                         ],
                       ),
-                      child: CustomPaint(
+                      child: SlideView(
+                        slide: board.slide,
                         painter: SlidePainter(
                           strokes: board.slide.strokes,
                           active: board.active,
@@ -747,6 +803,7 @@ class _BoardScreenState extends State<BoardScreen> {
                           marquee: board.marquee,
                           selectionBounds: board.selectionBounds(),
                           revision: _revision,
+                          drawSheet: false,
                         ),
                       ),
                     ),
@@ -888,6 +945,7 @@ class _TopBar extends StatelessWidget {
   final bool recording;
   final VoidCallback? onToggleRecording;
   final VoidCallback? onHistory;
+  final VoidCallback? onImportPdf;
 
   const _TopBar({
     required this.board,
@@ -901,6 +959,7 @@ class _TopBar extends StatelessWidget {
     required this.recording,
     required this.onToggleRecording,
     required this.onHistory,
+    required this.onImportPdf,
   });
 
   @override
@@ -1056,6 +1115,12 @@ class _TopBar extends StatelessWidget {
                 if (ok == true) board.clearSlide();
               },
             ),
+            if (onImportPdf != null)
+              _ActionButton(
+                icon: Icons.upload_file_outlined,
+                label: 'Import a PDF — teach on its pages',
+                onTap: onImportPdf,
+              ),
             _ActionButton(
               icon: Icons.picture_as_pdf_outlined,
               label: 'Share board as PDF',

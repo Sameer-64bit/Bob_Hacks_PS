@@ -69,6 +69,7 @@ extension RepositoryV5 on Repository {
   BoardSlide _slideFromRow(Map<String, dynamic> r) => BoardSlide(
         dbId: r['id'] as String,
         index: (r['slide_index'] as num).toInt(),
+        backgroundUrl: r['background_url'] as String?,
         strokes: [
           for (final s in (r['strokes'] as List))
             Stroke.fromJson(Map<String, dynamic>.from(s as Map)),
@@ -81,7 +82,8 @@ extension RepositoryV5 on Repository {
         .select()
         .eq('session_id', sessionId)
         .order('slide_index');
-    return [for (final r in rows) _slideFromRow(r)];
+    return [for (final r in rows) _slideFromRow(r)]
+      ..sort((a, b) => a.index.compareTo(b.index));
   }
 
   Future<void> saveSessionSlide(
@@ -92,6 +94,7 @@ extension RepositoryV5 on Repository {
         'session_id': sessionId,
         'slide_index': slide.index,
         'strokes': slide.strokesJson(),
+        'background_url': slide.backgroundUrl,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       },
       onConflict: 'session_id,slide_index',
@@ -112,7 +115,10 @@ extension RepositoryV5 on Repository {
         .stream(primaryKey: ['id'])
         .eq('session_id', sessionId)
         .order('slide_index', ascending: true)
-        .map((rows) => [for (final r in rows) _slideFromRow(r)]);
+        // Realtime updates can arrive out of order — sort every emission so
+        // students always see slides in exactly the teacher's arrangement.
+        .map((rows) => [for (final r in rows) _slideFromRow(r)]
+          ..sort((a, b) => a.index.compareTo(b.index)));
   }
 
   // ----------------------------------------------------------- notes history

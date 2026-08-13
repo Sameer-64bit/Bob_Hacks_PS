@@ -200,12 +200,7 @@ class _SessionBoardViewerState extends State<SessionBoardViewer> {
                               child: SizedBox(
                                 width: kCanvasSize.width,
                                 height: kCanvasSize.height,
-                                child: CustomPaint(
-                                  painter: SlidePainter(
-                                    strokes: _slides[_current].strokes,
-                                    revision: _current,
-                                  ),
-                                ),
+                                child: SlideView(slide: _slides[_current]),
                               ),
                             ),
                           ),

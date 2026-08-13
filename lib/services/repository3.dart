@@ -43,6 +43,22 @@ extension RepositoryV4 on Repository {
         .map((rows) => rows.isEmpty ? null : ClassNotes.fromMap(rows.first));
   }
 
+  /// Stores a translation so the notes never need translating twice.
+  Future<void> saveNotesTranslation(
+      String noteId, String languageCode, Map<String, dynamic> notesJson) async {
+    final row = await _db
+        .from('class_notes')
+        .select('translations')
+        .eq('id', noteId)
+        .maybeSingle();
+    final translations =
+        (row?['translations'] as Map?)?.cast<String, dynamic>() ?? {};
+    translations[languageCode] = notesJson;
+    await _db
+        .from('class_notes')
+        .update({'translations': translations}).eq('id', noteId);
+  }
+
   Future<void> markClassNotesFailed(String noteId, String message) async {
     await _db.from('class_notes').update({
       'status': 'failed',

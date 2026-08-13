@@ -214,8 +214,15 @@ class BoardSlide {
   int index;
   List<Stroke> strokes;
 
-  BoardSlide({this.dbId, required this.index, List<Stroke>? strokes})
-      : strokes = strokes ?? [];
+  /// Optional page image (e.g. an imported PDF page) drawn under the strokes.
+  String? backgroundUrl;
+
+  BoardSlide({
+    this.dbId,
+    required this.index,
+    List<Stroke>? strokes,
+    this.backgroundUrl,
+  }) : strokes = strokes ?? [];
 
   List<Map<String, dynamic>> strokesJson() =>
       [for (final s in strokes) s.toJson()];

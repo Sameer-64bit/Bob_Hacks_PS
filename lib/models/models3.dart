@@ -89,6 +89,9 @@ class ClassNotes {
   final List<ConceptNote> technicalTerms;
   final List<SlideNote> perSlide;
 
+  /// Cached translations by language code — translate once, read forever.
+  final Map<String, dynamic> translations;
+
   const ClassNotes({
     required this.id,
     required this.classroomId,
@@ -104,6 +107,7 @@ class ClassNotes {
     required this.keyConcepts,
     required this.technicalTerms,
     required this.perSlide,
+    this.translations = const {},
   });
 
   bool get isReady => status == 'ready';
@@ -134,6 +138,58 @@ class ClassNotes {
         for (final s in (notes['per_slide'] as List? ?? const []))
           SlideNote.fromMap((s as Map).cast<String, dynamic>()),
       ],
+      translations:
+          (m['translations'] as Map?)?.cast<String, dynamic>() ?? const {},
     );
   }
+
+  /// The display fields serialised back to the pipeline's JSON shape —
+  /// used to store a translation in the cache.
+  Map<String, dynamic> notesJson() => {
+        'title': title,
+        'lecture_overview': overview,
+        'simplified_summary': simplifiedSummary,
+        'key_concepts': [
+          for (final c in keyConcepts)
+            {
+              'concept': c.term,
+              'explanation': c.definition,
+              if (c.imageUrl != null) 'image': c.imageUrl,
+              if (c.wiki != null) 'wiki': c.wiki,
+            },
+        ],
+        'technical_terms': [
+          for (final c in technicalTerms)
+            {
+              'term': c.term,
+              'definition': c.definition,
+              if (c.imageUrl != null) 'image': c.imageUrl,
+              if (c.wiki != null) 'wiki': c.wiki,
+            },
+        ],
+        'per_slide': [
+          for (final s in perSlide)
+            {
+              'index': s.index,
+              'title': s.title,
+              'summary': s.summary,
+              'transcript': s.transcript,
+            },
+        ],
+      };
+
+  /// A copy of this row whose display fields come from [json] (e.g. a
+  /// cached or freshly-made translation).
+  ClassNotes withNotesJson(Map<String, dynamic> json) => ClassNotes.fromMap({
+        'id': id,
+        'classroom_id': classroomId,
+        'session_id': sessionId,
+        'status': status,
+        'progress': progress,
+        'stage': stage,
+        'error': error,
+        'created_at': createdAt.toUtc().toIso8601String(),
+        'notes': json,
+        'translations': translations,
+      });
 }

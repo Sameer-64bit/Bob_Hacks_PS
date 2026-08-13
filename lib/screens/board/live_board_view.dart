@@ -206,12 +206,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                             child: SizedBox(
                               width: kCanvasSize.width,
                               height: kCanvasSize.height,
-                              child: CustomPaint(
-                                painter: SlidePainter(
-                                  strokes: slide.strokes,
-                                  revision: slide.strokes.length,
-                                ),
-                              ),
+                              child: SlideView(slide: slide),
                             ),
                           ),
                         ),

@@ -109,7 +109,8 @@ class NotesPdf {
     for (final note in notes.perSlide) {
       pw.MemoryImage? image;
       if (note.index < slides.length &&
-          slides[note.index].strokes.isNotEmpty) {
+          (slides[note.index].strokes.isNotEmpty ||
+              slides[note.index].backgroundUrl != null)) {
         image = pw.MemoryImage(await BoardPdf.slidePng(slides[note.index]));
       }
       doc.addPage(

@@ -292,6 +292,16 @@ class BoardController extends ChangeNotifier {
     _changed();
   }
 
+  /// Appends an externally-built slide (e.g. an imported PDF page) and
+  /// makes it current. The caller persists it.
+  void appendSlide(BoardSlide slide) {
+    slide.index = slides.length;
+    slides.add(slide);
+    current = slides.length - 1;
+    selected.clear();
+    notifyListeners();
+  }
+
   void goTo(int index) {
     if (index < 0 || index >= slides.length) return;
     current = index;

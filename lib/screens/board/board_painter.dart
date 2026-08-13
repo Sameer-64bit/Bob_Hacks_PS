@@ -46,6 +46,10 @@ class SlidePainter extends CustomPainter {
   final Rect? selectionBounds;
   final int revision;
 
+  /// False when a background image widget is layered underneath (imported
+  /// PDF pages) — the painter then only draws strokes.
+  final bool drawSheet;
+
   SlidePainter({
     required this.strokes,
     this.active,
@@ -53,12 +57,15 @@ class SlidePainter extends CustomPainter {
     this.marquee,
     this.selectionBounds,
     this.revision = 0,
+    this.drawSheet = true,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final sheet = Offset.zero & size;
-    canvas.drawRect(sheet, Paint()..color = Colors.white);
+    if (drawSheet) {
+      canvas.drawRect(sheet, Paint()..color = Colors.white);
+    }
     canvas.clipRect(sheet);
 
     for (final s in strokes) {
@@ -115,6 +122,37 @@ class SlidePainter extends CustomPainter {
       old.selected != selected;
 }
 
+/// A slide as displayed anywhere in the app: white sheet, optional
+/// background image (imported PDF page), strokes on top.
+class SlideView extends StatelessWidget {
+  final BoardSlide slide;
+  final SlidePainter painter;
+
+  SlideView({super.key, required this.slide, SlidePainter? painter})
+      : painter = painter ??
+            SlidePainter(
+                strokes: slide.strokes,
+                revision: slide.strokes.length,
+                drawSheet: false);
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: Colors.white),
+        if (slide.backgroundUrl != null)
+          Image.network(
+            slide.backgroundUrl!,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+          ),
+        CustomPaint(painter: painter),
+      ],
+    );
+  }
+}
+
 /// Small thumbnail used in the slides sidebar.
 class SlideThumbnail extends StatelessWidget {
   final BoardSlide slide;
@@ -130,8 +168,10 @@ class SlideThumbnail extends StatelessWidget {
         child: SizedBox(
           width: kCanvasSize.width,
           height: kCanvasSize.height,
-          child: CustomPaint(
-            painter: SlidePainter(strokes: slide.strokes, revision: revision),
+          child: SlideView(
+            slide: slide,
+            painter: SlidePainter(
+                strokes: slide.strokes, revision: revision, drawSheet: false),
           ),
         ),
       ),

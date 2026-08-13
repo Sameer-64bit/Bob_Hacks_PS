@@ -1,41 +1,21 @@
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
 import '../models/models.dart';
-import '../screens/board/board_controller.dart';
-import '../screens/board/board_painter.dart';
+import 'slide_raster.dart';
 
 /// Turns the whiteboard into a shareable PDF — one page per non-empty
 /// slide — and opens the platform share/download dialog.
 class BoardPdf {
-  /// Renders one slide's strokes to a PNG at 3/4 canvas resolution
-  /// (1440×810 — crisp in a PDF without bloating the file).
+  /// Renders one slide to a PNG at 3/4 canvas resolution (1440×810 —
+  /// crisp in a PDF without bloating the file), background included.
   static Future<Uint8List> slidePng(BoardSlide slide) => _slidePng(slide);
 
-  static Future<Uint8List> _slidePng(BoardSlide slide) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
-    const scale = 0.75;
-    canvas.scale(scale);
-    canvas.drawRect(
-      ui.Rect.fromLTWH(0, 0, kCanvasSize.width, kCanvasSize.height),
-      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-    );
-    for (final stroke in slide.strokes) {
-      paintStroke(canvas, stroke);
-    }
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      (kCanvasSize.width * scale).round(),
-      (kCanvasSize.height * scale).round(),
-    );
-    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-    return bytes!.buffer.asUint8List();
-  }
+  static Future<Uint8List> _slidePng(BoardSlide slide) =>
+      SlideRaster.png(slide, scale: 0.75);
 
   /// Builds the PDF from every non-empty slide. Returns null when there is
   /// nothing to export.
@@ -43,7 +23,9 @@ class BoardPdf {
     required List<BoardSlide> slides,
     required String title,
   }) async {
-    final nonEmpty = slides.where((s) => s.strokes.isNotEmpty).toList();
+    final nonEmpty = slides
+        .where((s) => s.strokes.isNotEmpty || s.backgroundUrl != null)
+        .toList();
     if (nonEmpty.isEmpty) return null;
 
     final doc = pw.Document(title: title);
