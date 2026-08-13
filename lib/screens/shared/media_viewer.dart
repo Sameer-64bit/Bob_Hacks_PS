@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show File;
 import 'dart:typed_data';
 
@@ -48,6 +49,56 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   bool _dubbing = false;
   String? _lastSpokenId;
   String _notesContext = '';
+  late String _status = widget.media.transcriptStatus;
+  Timer? _captionPoll;
+  bool _regenerating = false;
+
+  /// Re-runs transcription for this media (e.g. an upload from before the
+  /// subtitles table existed, or a failed job). Uses the already-decrypted
+  /// bytes; captions appear via the poll when the server finishes.
+  Future<void> _generateSubtitles() async {
+    final bytes = _bytes;
+    if (bytes == null || _regenerating) return;
+    setState(() {
+      _regenerating = true;
+      _status = 'processing';
+    });
+    try {
+      await repo.startLectureMediaJob(
+        mediaId: widget.media.id,
+        noteId: null,
+        language: 'en',
+        title: widget.media.title,
+        mediaBytes: bytes,
+        mediaExt: widget.media.mime.startsWith('audio/') ? 'm4a' : 'mp4',
+      );
+      _startCaptionPoll();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = 'failed');
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not start subtitles: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _regenerating = false);
+    }
+  }
+
+  void _startCaptionPoll() {
+    _captionPoll?.cancel();
+    _captionPoll = Timer.periodic(const Duration(seconds: 8), (_) async {
+      try {
+        final captions = await repo.listMediaCaptions(widget.media.id);
+        if (captions.isNotEmpty && mounted) {
+          setState(() {
+            _captions = captions;
+            _status = 'ready';
+          });
+          _captionPoll?.cancel();
+        }
+      } catch (_) {}
+    });
+  }
 
   static const _ttsLocales = {
     'hi': 'hi-IN', 'bn': 'bn-IN', 'ta': 'ta-IN', 'te': 'te-IN',
@@ -91,10 +142,15 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     super.initState();
     _load();
     if (widget.media.sessionId != null) {
-      repo
-          .listMediaCaptions(widget.media.id)
-          .then((c) => mounted ? setState(() => _captions = c) : null)
-          .catchError((_) {});
+      repo.listMediaCaptions(widget.media.id).then((c) {
+        if (!mounted) return;
+        setState(() {
+          _captions = c;
+          if (c.isNotEmpty) _status = 'ready';
+        });
+        // Still transcribing on the server? Keep checking until they land.
+        if (c.isEmpty && _status == 'processing') _startCaptionPoll();
+      }).catchError((_) {});
     }
     _audio.onPositionChanged.listen((p) {
       final s = p.inMilliseconds / 1000.0;
@@ -126,6 +182,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   @override
   void dispose() {
+    _captionPoll?.cancel();
     _tts.stop();
     _video?.dispose();
     _audio.dispose();
@@ -274,11 +331,17 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: _SubtitleBar(
                 caption: _currentCaption,
-                status: media.transcriptStatus,
+                status: _status,
                 languageCode: widget.languageCode,
                 cache: _subtitleCache,
               ),
             ),
+            if (_captions.isEmpty && _status != 'processing')
+              TextButton.icon(
+                onPressed: _regenerating ? null : _generateSubtitles,
+                icon: const Icon(Icons.subtitles_outlined, size: 16),
+                label: const Text('Generate subtitles'),
+              ),
           ],
           if (media.sessionId != null)
             Expanded(
@@ -326,7 +389,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                       padding: const EdgeInsets.all(10),
                       child: _SubtitleBar(
                         caption: _currentCaption,
-                        status: media.transcriptStatus,
+                        status: _status,
                         languageCode: widget.languageCode,
                         cache: _subtitleCache,
                         onDark: true,
@@ -344,6 +407,16 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                     ? _toggleDub
                     : null,
           ),
+          if (media.sessionId != null &&
+              _captions.isEmpty &&
+              _status != 'processing')
+            TextButton.icon(
+              onPressed: _regenerating ? null : _generateSubtitles,
+              icon: const Icon(Icons.subtitles_outlined, size: 16),
+              label: Text(_regenerating
+                  ? 'Starting…'
+                  : 'Generate subtitles (transcribe this lecture)'),
+            ),
           if (media.sessionId != null)
             Expanded(
               child: _LectureChat(

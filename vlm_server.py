@@ -145,7 +145,7 @@ import tempfile
 
 from notes_pipeline import align_segments, compose_notes, gemini_enhance, wiki_enrich
 
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")  # tiny/base = fast
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")  # better Hindi/multilingual; use base/tiny for speed
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 _whisper_model = None
 _whisper_lock = threading.Lock()
@@ -550,8 +550,11 @@ def _process_lecture_media(req: LectureMediaRequest):
         ]
         logger.info(
             f"Lecture video: {len(segments)} segments ({info.duration:.0f}s)")
-        _insert_media_captions(req.media_id, segments)
-        _set_media_status(req.media_id, "ready")
+        try:
+            _insert_media_captions(req.media_id, segments)
+        except Exception as e:  # noqa: BLE001 — subtitles are retryable
+            logger.warning(f"Caption insert failed (continuing): {e}")
+        _set_media_status(req.media_id, "ready" if segments else "failed")
 
         # Synthesise the class notes from this transcript + the slides,
         # decorated with one video frame per slide.
