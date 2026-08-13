@@ -6,6 +6,7 @@ import '../../data/languages.dart';
 import '../../models/models.dart';
 import '../../models/models2.dart';
 import '../../models/models3.dart';
+import '../../services/ai.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository3.dart';
@@ -310,14 +311,18 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final color = subjectColor(entry.subject);
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true, // content can be tall — never overflow
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 26, 24, 36),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      builder: (ctx) => ConstrainedBox(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 26, 24, 36),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             Row(
               children: [
                 Container(
@@ -363,36 +368,48 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 Text('Every ${dayName(entry.dayOfWeek)}', style: text.bodyLarge),
               ],
             ),
-            const SizedBox(height: 20),
-            if (_classroom != null) ...[
-              ClassNotesSection(
-                classroom: _classroom!,
-                languageCode: _language,
-              ),
-              const SizedBox(height: 8),
-              ClassMediaSection(
-                  classroom: _classroom!, languageCode: _language),
+              const SizedBox(height: 20),
+              if (_classroom != null) ...[
+                ClassNotesSection(
+                  classroom: _classroom!,
+                  languageCode: _language,
+                ),
+                const SizedBox(height: 8),
+                ClassMediaSection(
+                  classroom: _classroom!,
+                  languageCode: _language,
+                  scheduleId: entry.id,
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// Teacher-shared media for this classroom — opens in the encrypted
+/// Teacher-shared media for one subject — opens in the encrypted
 /// in-app viewer, with lecture subtitles in [languageCode].
 class ClassMediaSection extends StatelessWidget {
   final Classroom classroom;
   final String languageCode;
-  const ClassMediaSection(
-      {super.key, required this.classroom, this.languageCode = 'en'});
+
+  /// Only this subject's media (plus untagged files) is shown.
+  final String? scheduleId;
+
+  const ClassMediaSection({
+    super.key,
+    required this.classroom,
+    this.languageCode = 'en',
+    this.scheduleId,
+  });
 
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     return FutureBuilder<List<ClassMedia>>(
-      future: repo.listClassMedia(classroom.id),
+      future: repo.listClassMedia(classroom.id, scheduleId: scheduleId),
       builder: (context, snapshot) {
         final media = snapshot.data ?? const <ClassMedia>[];
         if (media.isEmpty) return const SizedBox.shrink();
@@ -438,13 +455,68 @@ class ClassMediaSection extends StatelessWidget {
 }
 
 /// Live class-notes status inside the class sheet: a progress bar that
-/// fills while the AI prepares the notes, then a "View class notes" button.
-class ClassNotesSection extends StatelessWidget {
+/// fills while the AI prepares the notes, then a "View class notes" button —
+/// plus "generate combined notes" when a lecture video exists that hasn't
+/// been merged into the notes yet.
+class ClassNotesSection extends StatefulWidget {
   final Classroom classroom;
   final String languageCode;
 
   const ClassNotesSection(
       {super.key, required this.classroom, required this.languageCode});
+
+  @override
+  State<ClassNotesSection> createState() => _ClassNotesSectionState();
+}
+
+class _ClassNotesSectionState extends State<ClassNotesSection> {
+  Classroom get classroom => widget.classroom;
+  String get languageCode => widget.languageCode;
+  bool _startingCombined = false;
+
+  /// The notes have lecture audio when any slide carries spoken words.
+  bool _hasAudio(ClassNotes notes) =>
+      notes.perSlide.any((s) => s.transcript.trim().isNotEmpty);
+
+  /// Re-runs the notes pipeline with the session's lecture video: the app
+  /// decrypts the video, sends it to the AI server, and the same progress
+  /// bar tracks the regeneration.
+  Future<void> _generateCombined(ClassNotes notes, ClassMedia media) async {
+    if (_startingCombined) return;
+    setState(() => _startingCombined = true);
+    try {
+      final sessionId = notes.sessionId ?? media.sessionId!;
+      final bytes = await repo.fetchClassMedia(media);
+      await repo.resetClassNotes(notes.id);
+      final slides = await repo.loadSessionSlides(sessionId);
+      final pngs = <String>[];
+      final strokeCounts = <int>[];
+      for (final slide in slides) {
+        pngs.add(await SlideAi.renderSlideBase64(slide));
+        strokeCounts
+            .add(slide.backgroundUrl != null ? 999 : slide.strokes.length);
+        await Future<void>.delayed(Duration.zero);
+      }
+      final sessions = await repo.classroomSessions(classroom.id);
+      final session =
+          sessions.where((s) => s.id == sessionId).toList();
+      await repo.startLectureMediaJob(
+        mediaId: media.id,
+        noteId: notes.id,
+        language: 'en',
+        title: notes.title,
+        mediaBytes: bytes,
+        mediaExt: media.mime.startsWith('audio/') ? 'm4a' : 'mp4',
+        slidePngsB64: pngs,
+        strokeCounts: strokeCounts,
+        slideMarks: session.isEmpty ? const [] : session.first.slideMarks,
+      );
+    } catch (e) {
+      if (mounted) showError(context, e);
+    } finally {
+      if (mounted) setState(() => _startingCombined = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -547,6 +619,66 @@ class ClassNotesSection extends StatelessWidget {
               ),
               child: child,
             ),
+            // Lecture video uploaded but the notes don't have its audio
+            // yet? Offer to synthesise the combined notes.
+            if (notes != null && notes.isReady && !_hasAudio(notes))
+              FutureBuilder<List<ClassMedia>>(
+                future: repo.listClassMedia(classroom.id),
+                builder: (context, mediaSnap) {
+                  final lecture = (mediaSnap.data ?? const <ClassMedia>[])
+                      .where((m) =>
+                          m.sessionId != null &&
+                          m.sessionId == notes.sessionId)
+                      .toList();
+                  if (lecture.isEmpty) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Palette.navy.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: Palette.navy.withValues(alpha: 0.15)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.movie_outlined,
+                              color: Palette.navy, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'Lecture video available — combine it with '
+                              'these notes?',
+                              style: text.titleMedium
+                                  ?.copyWith(fontSize: 13),
+                            ),
+                          ),
+                          FilledButton(
+                            style: FilledButton.styleFrom(
+                                minimumSize: const Size(0, 38),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14)),
+                            onPressed: _startingCombined
+                                ? null
+                                : () => _generateCombined(
+                                    notes, lecture.first),
+                            child: _startingCombined
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white))
+                                : const Text('Generate'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
             TextButton.icon(
               onPressed: () => _showNotesHistory(context),
               icon: const Icon(Icons.history, size: 16),

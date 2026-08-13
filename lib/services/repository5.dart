@@ -137,6 +137,7 @@ extension RepositoryV7 on Repository {
     required String mime,
     required Uint8List bytes,
     String? sessionId,
+    String? scheduleId,
     String transcriptStatus = 'none',
   }) async {
     // Off the UI thread — a 50 MB gzip+AES pass would otherwise freeze the
@@ -156,6 +157,7 @@ extension RepositoryV7 on Repository {
           'classroom_id': classroomId,
           'teacher_id': teacherId,
           if (sessionId != null) 'session_id': sessionId,
+          if (scheduleId != null) 'schedule_id': scheduleId,
           'transcript_status': transcriptStatus,
           'title': title,
           'mime': mime,
@@ -227,13 +229,34 @@ extension RepositoryV7 on Repository {
     }
   }
 
-  Future<List<ClassMedia>> listClassMedia(String classroomId) async {
+  /// Media for a classroom; when [scheduleId] is given, only that
+  /// subject's media (plus untagged/general files) is returned.
+  Future<List<ClassMedia>> listClassMedia(String classroomId,
+      {String? scheduleId}) async {
     final rows = await _db
         .from('class_media')
         .select()
         .eq('classroom_id', classroomId)
         .order('created_at', ascending: false);
-    return [for (final r in rows) ClassMedia.fromMap(r)];
+    final all = [for (final r in rows) ClassMedia.fromMap(r)];
+    if (scheduleId == null) return all;
+    return [
+      for (final m in all)
+        if (m.scheduleId == null || m.scheduleId == scheduleId) m,
+    ];
+  }
+
+  /// Full notes row for a session (used by the lecture chatbot context and
+  /// the combined-notes button).
+  Future<ClassNotes?> notesForSession(String sessionId) async {
+    final row = await _db
+        .from('class_notes')
+        .select()
+        .eq('session_id', sessionId)
+        .order('created_at', ascending: false)
+        .limit(1)
+        .maybeSingle();
+    return row == null ? null : ClassNotes.fromMap(row);
   }
 
   Future<void> deleteClassMedia(String id) async {

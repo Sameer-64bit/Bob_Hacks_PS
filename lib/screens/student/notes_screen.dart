@@ -38,6 +38,11 @@ class _NotesScreenState extends State<NotesScreen> {
   ClassNotes? _translated;
   bool _translating = false;
 
+  /// Live language override — switching here retranslates immediately,
+  /// no need to reopen the notes.
+  String? _langOverride;
+  String get _lang => _langOverride ?? widget.languageCode;
+
   ClassNotes get _shown => _translated ?? widget.notes;
 
   @override
@@ -54,8 +59,11 @@ class _NotesScreenState extends State<NotesScreen> {
   }
 
   Future<void> _translate() async {
-    final code = widget.languageCode;
-    if (code == 'en') return;
+    final code = _lang;
+    if (code == 'en') {
+      setState(() => _translated = null);
+      return;
+    }
 
     // Translated once already? Use the cached copy — instant.
     final cached = widget.notes.translations[code];
@@ -68,17 +76,26 @@ class _NotesScreenState extends State<NotesScreen> {
     setState(() => _translating = true);
     try {
       final n = widget.notes;
-      Future<String> t(String s) => Translator.translate(s, code);
 
-      // Translate everything concurrently — one slow call no longer holds
-      // up the whole page.
-      final results = await Future.wait<String>([
-        t(n.overview),
-        t(n.simplifiedSummary),
-        for (final c in n.keyConcepts) t(c.definition),
-        for (final c in n.technicalTerms) t(c.definition),
-        for (final s in n.perSlide) t(s.summary),
-      ]);
+      // Bounded concurrency + per-field fallback: the free translator
+      // rate-limits bursts, and one failed call must not leave the whole
+      // page in English.
+      final inputs = <String>[
+        n.overview,
+        n.simplifiedSummary,
+        for (final c in n.keyConcepts) c.definition,
+        for (final c in n.technicalTerms) c.definition,
+        for (final s in n.perSlide) s.summary,
+      ];
+      final results = await Translator.translateAll(inputs, code);
+      final allOk = () {
+        var ok = 0;
+        for (var i = 0; i < inputs.length; i++) {
+          if (inputs[i].trim().isEmpty || results[i] != inputs[i]) ok++;
+        }
+        return ok >= inputs.length - 1; // tolerate one stubborn field
+      }();
+      if (_lang != code) return; // user switched again mid-flight
       var cursor = 0;
       String next() => results[cursor++];
 
@@ -118,15 +135,19 @@ class _NotesScreenState extends State<NotesScreen> {
               title: s.title,
               summary: next(),
               transcript: s.transcript, // spoken words stay as spoken
+              snippetUrl: s.snippetUrl,
             ),
         ],
       );
       if (mounted) setState(() => _translated = translated);
-      // Save for everyone — next open of these notes skips translation.
-      try {
-        await repo.saveNotesTranslation(
-            widget.notes.id, code, translated.notesJson());
-      } catch (_) {}
+      // Cache for everyone — but only a fully-translated copy, never a
+      // half-English one.
+      if (allOk) {
+        try {
+          await repo.saveNotesTranslation(
+              widget.notes.id, code, translated.notesJson());
+        } catch (_) {}
+      }
     } catch (_) {
       // Translation is best-effort — English notes still show.
     } finally {
@@ -135,7 +156,7 @@ class _NotesScreenState extends State<NotesScreen> {
   }
 
   Future<void> _openPdf() async {
-    final code = widget.languageCode;
+    final code = _lang;
     // Use translated text when we have a font for the script, else English.
     final forPdf =
         (NotesPdf.needsCustomFont(code) && _translated == null) || code == 'en'
@@ -163,12 +184,28 @@ class _NotesScreenState extends State<NotesScreen> {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final notes = _shown;
-    final language = languageByCode(widget.languageCode);
+    final language = languageByCode(_lang);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Class notes'),
         actions: [
+          PopupMenuButton<String>(
+            tooltip: 'Notes language',
+            icon: const Icon(Icons.translate, size: 20),
+            initialValue: _lang,
+            onSelected: (code) {
+              setState(() {
+                _langOverride = code;
+                _translated = null;
+              });
+              _translate();
+            },
+            itemBuilder: (_) => [
+              for (final l in kLanguages)
+                PopupMenuItem(value: l.code, child: Text(l.native)),
+            ],
+          ),
           if (_translating)
             const Padding(
               padding: EdgeInsets.only(right: 8),
@@ -613,6 +650,27 @@ class _SlideNoteCardState extends State<_SlideNoteCard> {
         children: [
           if (slide != null && slide.strokes.isNotEmpty)
             SlideThumbnail(slide: slide),
+          if (widget.note.snippetUrl != null)
+            Container(
+              width: double.infinity,
+              color: const Color(0xFF20242B),
+              child: Column(
+                children: [
+                  Image.network(
+                    widget.note.snippetUrl!,
+                    height: 130,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 4),
+                    child: Text('🎬 from the lecture video',
+                        style:
+                            TextStyle(color: Colors.white54, fontSize: 10)),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: Column(

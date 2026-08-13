@@ -8,11 +8,15 @@ class SlideNote {
   final String summary;
   final String transcript;
 
+  /// A frame from the lecture video taken while this slide was on screen.
+  final String? snippetUrl;
+
   const SlideNote({
     required this.index,
     required this.title,
     required this.summary,
     required this.transcript,
+    this.snippetUrl,
   });
 
   factory SlideNote.fromMap(Map<String, dynamic> m) => SlideNote(
@@ -20,6 +24,7 @@ class SlideNote {
         title: m['title'] as String? ?? '',
         summary: m['summary'] as String? ?? '',
         transcript: m['transcript'] as String? ?? '',
+        snippetUrl: m['snippet_url'] as String?,
       );
 }
 
@@ -76,6 +81,7 @@ class ClassMedia {
   final String id;
   final String classroomId;
   final String? sessionId; // set when this is the class lecture recording
+  final String? scheduleId; // which subject (schedule entry) this belongs to
   final String transcriptStatus; // none | processing | ready | failed
   final String title;
   final String mime;
@@ -89,6 +95,7 @@ class ClassMedia {
     required this.id,
     required this.classroomId,
     this.sessionId,
+    this.scheduleId,
     this.transcriptStatus = 'none',
     required this.title,
     required this.mime,
@@ -110,6 +117,7 @@ class ClassMedia {
         id: m['id'] as String,
         classroomId: m['classroom_id'] as String,
         sessionId: m['session_id'] as String?,
+        scheduleId: m['schedule_id'] as String?,
         transcriptStatus: m['transcript_status'] as String? ?? 'none',
         title: m['title'] as String? ?? 'Untitled',
         mime: m['mime'] as String? ?? 'application/octet-stream',
@@ -259,6 +267,7 @@ class ClassNotes {
               'title': s.title,
               'summary': s.summary,
               'transcript': s.transcript,
+              if (s.snippetUrl != null) 'snippet_url': s.snippetUrl,
             },
         ],
       };

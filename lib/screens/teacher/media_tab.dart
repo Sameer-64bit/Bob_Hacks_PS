@@ -104,6 +104,54 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
     );
   }
 
+  /// A classroom hosts several subjects — media must belong to ONE of
+  /// them, otherwise an ML video shows up under every class. Subjects
+  /// taught on [preferDay] (the session's weekday) are listed first.
+  Future<ScheduleEntry?> _pickSubject(Classroom classroom,
+      {int? preferDay}) async {
+    final schedule = await repo.classroomSchedule(classroom.id);
+    if (schedule.isEmpty) {
+      if (mounted) {
+        showError(context,
+            'This classroom has no scheduled subjects yet — add your schedule first.');
+      }
+      return null;
+    }
+    final entries = [...schedule]..sort((a, b) {
+        if (preferDay != null) {
+          final ap = a.dayOfWeek == preferDay ? 0 : 1;
+          final bp = b.dayOfWeek == preferDay ? 0 : 1;
+          if (ap != bp) return ap - bp;
+        }
+        final d = a.dayOfWeek.compareTo(b.dayOfWeek);
+        return d != 0 ? d : a.startMinutes.compareTo(b.startMinutes);
+      });
+    if (!mounted) return null;
+    return showDialog<ScheduleEntry>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Which class is this for?'),
+        children: [
+          for (final e in entries.take(10))
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(ctx).pop(e),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(e.subject,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  Text('${dayName(e.dayOfWeek)} · ${e.timeRange}',
+                      style: const TextStyle(
+                          fontSize: 12, color: Palette.faint)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _upload() async {
     final classroom = _classroom;
     if (classroom == null || _uploading) return;
@@ -154,6 +202,12 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
         }
       }
 
+      // Every upload is tagged with its subject so it only appears under
+      // the right class.
+      final subject = await _pickSubject(classroom,
+          preferDay: session?.startedAt.weekday);
+      if (subject == null) return;
+
       setState(() => _uploading = true);
 
       // Visible progress the whole way — encrypting a big video takes a
@@ -193,6 +247,7 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
           mime: mime,
           bytes: bytes,
           sessionId: session?.id,
+          scheduleId: subject.id,
           transcriptStatus: session != null ? 'processing' : 'none',
         );
 

@@ -49,15 +49,25 @@ class Translator {
 
   /// Translates [text] from English into [targetCode] (e.g. 'hi').
   /// Returns the input untouched when the target is English.
+  /// Retries each chunk once — the free tier throws sporadic 429s.
   static Future<String> translate(String text, String targetCode) async {
     if (targetCode == 'en' || text.trim().isEmpty) return text;
     final results = <String>[];
     for (final chunk in chunkText(text)) {
+      results.add(await _translateChunk(chunk, targetCode, retriesLeft: 2));
+    }
+    return results.join('\n');
+  }
+
+  static Future<String> _translateChunk(String chunk, String targetCode,
+      {required int retriesLeft}) async {
+    try {
       final uri = Uri.parse(_endpoint).replace(queryParameters: {
         'q': chunk,
         'langpair': 'en|$targetCode',
       });
-      final response = await http.get(uri);
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
         throw Exception(
             'Translation service unavailable (HTTP ${response.statusCode}).');
@@ -66,11 +76,47 @@ class Translator {
       final translated =
           data['responseData']?['translatedText'] as String? ?? '';
       if (translated.isEmpty ||
-          (data['responseStatus'] != 200 && data['responseStatus'] != '200')) {
+          (data['responseStatus'] != 200 &&
+              data['responseStatus'] != '200')) {
         throw Exception('Translation failed — try again in a moment.');
       }
-      results.add(translated);
+      return translated;
+    } catch (_) {
+      if (retriesLeft > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        return _translateChunk(chunk, targetCode,
+            retriesLeft: retriesLeft - 1);
+      }
+      rethrow;
     }
-    return results.join('\n');
+  }
+
+  /// Like [translate] but NEVER throws — falls back to the original text.
+  /// Use for big batches where one failed field shouldn't kill the rest.
+  static Future<String> translateSafe(String text, String targetCode) async {
+    try {
+      return await translate(text, targetCode);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  /// Runs translation jobs with bounded concurrency (the free API rate-
+  /// limits aggressive parallel bursts, which silently broke whole pages).
+  static Future<List<String>> translateAll(
+      List<String> texts, String targetCode,
+      {int concurrency = 3}) async {
+    final results = List<String>.filled(texts.length, '');
+    var next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final i = next++;
+        if (i >= texts.length) return;
+        results[i] = await translateSafe(texts[i], targetCode);
+      }
+    }
+
+    await Future.wait([for (var w = 0; w < concurrency; w++) worker()]);
+    return results;
   }
 }

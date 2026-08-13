@@ -113,16 +113,24 @@ class SlideAi {
     required String transcript,
     required String question,
     required AppLanguage target,
+    String notesContext = '',
   }) async {
-    final context = transcript.length > 4000
-        ? transcript.substring(transcript.length - 4000)
+    final lecture = transcript.length > 3500
+        ? transcript.substring(transcript.length - 3500)
         : transcript;
+    final notes = notesContext.length > 1500
+        ? notesContext.substring(0, 1500)
+        : notesContext;
     final body = jsonEncode({
-      'prompt': 'You are a helpful teaching assistant. Below is the '
-          'transcript of a class lecture. Answer the student\'s question '
-          'using ONLY this lecture. If the lecture does not cover it, say '
-          'so briefly.\n\nLECTURE:\n$context\n\nQUESTION: $question\n\n'
-          'Answer in 2-5 sentences of plain English.',
+      'prompt': 'You are the teacher of this class: patient, precise, and '
+          'you explain like you are talking to your own student. You know '
+          'everything below — the class notes and the lecture transcript. '
+          'Answer the student\'s question from this material; connect it to '
+          'what was taught, give a small example when helpful, and if the '
+          'class truly did not cover it, say what WAS covered that comes '
+          'closest.\n\nCLASS NOTES:\n$notes\n\nLECTURE TRANSCRIPT:\n'
+          '$lecture\n\nSTUDENT\'S QUESTION: $question\n\n'
+          'Answer as the teacher, in 3-6 clear sentences of plain English.',
     });
     http.Response response;
     try {

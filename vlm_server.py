@@ -235,9 +235,11 @@ def _transcribe(req: EndClassRequest):
     return out
 
 
-def _generate_notes(note_id, title, language, slides, stroke_counts, slide_marks, segments):
+def _generate_notes(note_id, title, language, slides, stroke_counts, slide_marks,
+                    segments, snippets=None):
     """Slides + transcript segments -> finished notes row. Shared by the
-    end-class flow and the lecture-video flow."""
+    end-class flow and the lecture-video flow. `snippets` maps slide index
+    to a lecture-video frame URL."""
     note = lambda p, s: supabase_update_note(note_id, {"progress": p, "stage": s})  # noqa: E731
 
     # Read every slide with SmolVLM (the model is already in memory).
@@ -265,6 +267,11 @@ def _generate_notes(note_id, title, language, slides, stroke_counts, slide_marks
     note(80, "Writing the notes…")
     per_slide, unassigned = align_segments(segments, slide_marks, len(slides))
     notes = compose_notes(title, slide_summaries, per_slide, unassigned, language)
+    if snippets:
+        for entry in notes["per_slide"]:
+            url = snippets.get(entry["index"])
+            if url:
+                entry["snippet_url"] = url
 
     # Optional Gemini polish (Content_Generation's schema), time-boxed.
     if GEMINI_API_KEY:
@@ -460,6 +467,69 @@ def _insert_media_captions(media_id: str, segments: list[dict]):
     urllib.request.urlopen(req, timeout=15).read()
 
 
+def _upload_snippet(name: str, jpeg_bytes: bytes) -> str | None:
+    """Uploads a video frame to Supabase storage, returns its public URL."""
+    try:
+        req = urllib.request.Request(
+            f"{SUPABASE_URL}/storage/v1/object/media/snippets/{name}",
+            data=jpeg_bytes,
+            method="POST",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                "Content-Type": "image/jpeg",
+                "x-upsert": "true",
+            },
+        )
+        urllib.request.urlopen(req, timeout=20).read()
+        return f"{SUPABASE_URL}/storage/v1/object/public/media/snippets/{name}"
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Snippet upload failed: {e}")
+        return None
+
+
+def extract_video_snippets(path, media_id, slide_count, slide_marks, duration):
+    """One representative frame per slide from the lecture video — shown in
+    the notes as "from the lecture". Uses PyAV (already a whisper dep)."""
+    if slide_count <= 0 or duration <= 0:
+        return {}
+    # A timestamp per slide: the recorded slide-change marks when we have
+    # them, else evenly spaced through the video.
+    marks = {int(m["index"]): float(m["at"]) for m in (slide_marks or [])
+             if 0 <= int(m.get("index", -1)) < slide_count}
+    times = {
+        i: min(marks.get(i, (i + 0.5) * duration / slide_count) + 1.0,
+               max(duration - 0.5, 0.1))
+        for i in range(slide_count)
+    }
+    snippets = {}
+    try:
+        import av  # PyAV ships with faster-whisper
+
+        container = av.open(path)
+        stream = next((s for s in container.streams if s.type == "video"), None)
+        if stream is None:
+            return {}
+        for index, t in sorted(times.items(), key=lambda kv: kv[1]):
+            try:
+                container.seek(int(t / stream.time_base), stream=stream)
+                frame = next(container.decode(stream))
+                image = frame.to_image()
+                image.thumbnail((640, 640))
+                buf = io.BytesIO()
+                image.save(buf, format="JPEG", quality=70)
+                url = _upload_snippet(f"{media_id}-{index}.jpg", buf.getvalue())
+                if url:
+                    snippets[index] = url
+            except Exception:  # noqa: BLE001 — a missing frame is fine
+                continue
+        container.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Snippet extraction unavailable: {e}")
+    logger.info(f"Extracted {len(snippets)} video snippets")
+    return snippets
+
+
 def _process_lecture_media(req: LectureMediaRequest):
     try:
         _set_media_status(req.media_id, "processing")
@@ -483,11 +553,18 @@ def _process_lecture_media(req: LectureMediaRequest):
         _insert_media_captions(req.media_id, segments)
         _set_media_status(req.media_id, "ready")
 
-        # Synthesise the class notes from this transcript + the slides.
+        # Synthesise the class notes from this transcript + the slides,
+        # decorated with one video frame per slide.
         if req.note_id:
+            supabase_update_note(
+                req.note_id, {"progress": 15, "stage": "Grabbing video snippets…"})
+            snippets = extract_video_snippets(
+                path, req.media_id, len(req.slides), req.slide_marks,
+                float(info.duration or 0))
             _generate_notes(
                 req.note_id, req.title, req.language, req.slides,
                 req.stroke_counts, req.slide_marks, segments,
+                snippets=snippets,
             )
     except Exception as e:  # noqa: BLE001
         logger.exception("Lecture media pipeline failed")

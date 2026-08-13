@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:video_player/video_player.dart';
@@ -39,10 +40,51 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   bool _wasPlaying = false;
 
-  // Lecture subtitles
+  // Lecture subtitles + dubbing
   List<LiveCaption> _captions = [];
   final Map<String, String> _subtitleCache = {};
   double _positionS = 0;
+  final FlutterTts _tts = FlutterTts();
+  bool _dubbing = false;
+  String? _lastSpokenId;
+  String _notesContext = '';
+
+  static const _ttsLocales = {
+    'hi': 'hi-IN', 'bn': 'bn-IN', 'ta': 'ta-IN', 'te': 'te-IN',
+    'mr': 'mr-IN', 'gu': 'gu-IN', 'pa': 'pa-IN', 'kn': 'kn-IN',
+    'ml': 'ml-IN', 'ur': 'ur-PK', 'ne': 'ne-NP', 'es': 'es-ES',
+    'fr': 'fr-FR', 'de': 'de-DE', 'ar': 'ar-SA', 'zh-CN': 'zh-CN',
+    'ja': 'ja-JP', 'en': 'en-IN',
+  };
+
+  Future<void> _toggleDub() async {
+    final video = _video;
+    if (_dubbing) {
+      await _tts.stop();
+      await video?.setVolume(1);
+      setState(() => _dubbing = false);
+      return;
+    }
+    await _tts.setLanguage(
+        _ttsLocales[widget.languageCode] ?? widget.languageCode);
+    await _tts.setSpeechRate(0.5);
+    await video?.setVolume(0); // mute the original — the dub speaks instead
+    setState(() => _dubbing = true);
+  }
+
+  /// Speaks the current caption (translated) when dubbing is on.
+  Future<void> _maybeSpeak() async {
+    if (!_dubbing) return;
+    final caption = _currentCaption;
+    if (caption == null || caption.id == _lastSpokenId) return;
+    _lastSpokenId = caption.id;
+    final key = '${caption.id}:${widget.languageCode}';
+    final text = _subtitleCache[key] ??
+        await Translator.translateSafe(caption.text, widget.languageCode);
+    _subtitleCache[key] = text;
+    await _tts.stop();
+    await _tts.speak(text);
+  }
 
   @override
   void initState() {
@@ -59,8 +101,20 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
       // Throttle: rebuilding the whole screen on every tick causes jank.
       if (mounted && widget.media.isAudio && (s - _positionS).abs() >= 0.25) {
         setState(() => _positionS = s);
+        _maybeSpeak();
       }
     });
+    // The chatbot teaches from the class notes too, not just the audio.
+    final sessionId = widget.media.sessionId;
+    if (sessionId != null) {
+      repo.notesForSession(sessionId).then((notes) {
+        if (notes == null || !mounted) return;
+        setState(() => _notesContext = [
+              notes.overview,
+              for (final s in notes.perSlide) '${s.title}: ${s.summary}',
+            ].join('\n'));
+      }).catchError((_) {});
+    }
   }
 
   LiveCaption? get _currentCaption {
@@ -72,6 +126,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   @override
   void dispose() {
+    _tts.stop();
     _video?.dispose();
     _audio.dispose();
     super.dispose();
@@ -98,6 +153,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                   controller.value.isPlaying != _wasPlaying)) {
             _wasPlaying = controller.value.isPlaying;
             setState(() => _positionS = s);
+            _maybeSpeak();
           }
         });
         _video = controller;
@@ -230,6 +286,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                 captions: _captions,
                 languageCode: widget.languageCode,
                 title: media.title,
+                notesContext: _notesContext,
               ),
             )
           else
@@ -253,33 +310,47 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
       }
       return Column(
         children: [
-          AspectRatio(
-            aspectRatio: video.value.aspectRatio,
-            child: Stack(
-              alignment: Alignment.bottomCenter,
-              children: [
-                VideoPlayer(video),
-                if (_captions.isNotEmpty || media.sessionId != null)
-                  Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: _SubtitleBar(
-                      caption: _currentCaption,
-                      status: media.transcriptStatus,
-                      languageCode: widget.languageCode,
-                      cache: _subtitleCache,
-                      onDark: true,
+          ConstrainedBox(
+            // Cap the video height so controls + chat always fit on screen
+            // (landscape videos were overflowing the phone display).
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.42),
+            child: AspectRatio(
+              aspectRatio: video.value.aspectRatio,
+              child: Stack(
+                alignment: Alignment.bottomCenter,
+                children: [
+                  VideoPlayer(video),
+                  if (_captions.isNotEmpty || media.sessionId != null)
+                    Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: _SubtitleBar(
+                        caption: _currentCaption,
+                        status: media.transcriptStatus,
+                        languageCode: widget.languageCode,
+                        cache: _subtitleCache,
+                        onDark: true,
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
-          _VideoControls(video: video),
+          _VideoControls(
+            video: video,
+            dubbing: _dubbing,
+            onToggleDub:
+                media.sessionId != null && widget.languageCode != 'en'
+                    ? _toggleDub
+                    : null,
+          ),
           if (media.sessionId != null)
             Expanded(
               child: _LectureChat(
                 captions: _captions,
                 languageCode: widget.languageCode,
                 title: media.title,
+                notesContext: _notesContext,
               ),
             )
           else
@@ -294,7 +365,10 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 /// Play/pause, ±10 s, and a scrubber with elapsed/total time.
 class _VideoControls extends StatelessWidget {
   final VideoPlayerController video;
-  const _VideoControls({required this.video});
+  final bool dubbing;
+  final VoidCallback? onToggleDub;
+  const _VideoControls(
+      {required this.video, this.dubbing = false, this.onToggleDub});
 
   String _fmt(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
@@ -360,6 +434,24 @@ class _VideoControls extends StatelessWidget {
                     position + const Duration(seconds: 10)),
                 icon: const Icon(Icons.forward_10, color: Palette.dark),
               ),
+              if (onToggleDub != null) ...[
+                const SizedBox(width: 6),
+                Tooltip(
+                  message: dubbing
+                      ? 'Stop dubbed audio (original sound returns)'
+                      : 'Dub the lecture into your language (spoken aloud)',
+                  child: IconButton(
+                    onPressed: onToggleDub,
+                    icon: Icon(
+                      dubbing
+                          ? Icons.record_voice_over
+                          : Icons.voice_over_off_outlined,
+                      color:
+                          dubbing ? Palette.marigold : Palette.faint,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ],
@@ -374,11 +466,13 @@ class _LectureChat extends StatefulWidget {
   final List<LiveCaption> captions;
   final String languageCode;
   final String title;
+  final String notesContext;
 
   const _LectureChat({
     required this.captions,
     required this.languageCode,
     required this.title,
+    this.notesContext = '',
   });
 
   @override
@@ -413,6 +507,7 @@ class _LectureChatState extends State<_LectureChat> {
         transcript: transcript.isEmpty ? widget.title : transcript,
         question: question,
         target: languageByCode(widget.languageCode),
+        notesContext: widget.notesContext,
       );
       if (mounted) setState(() => _messages.add((me: false, text: answer)));
     } catch (e) {
