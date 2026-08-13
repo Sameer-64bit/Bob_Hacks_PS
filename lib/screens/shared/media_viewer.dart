@@ -508,6 +508,12 @@ class _LectureChatState extends State<_LectureChat> {
         question: question,
         target: languageByCode(widget.languageCode),
         notesContext: widget.notesContext,
+        // Follow-up questions keep their thread: send the recent turns.
+        history: [
+          for (final m
+              in _messages.sublist(0, _messages.length - 1).reversed.take(4).toList().reversed)
+            {'role': m.me ? 'user' : 'assistant', 'text': m.text},
+        ],
       );
       if (mounted) setState(() => _messages.add((me: false, text: answer)));
     } catch (e) {

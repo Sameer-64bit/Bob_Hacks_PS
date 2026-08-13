@@ -84,6 +84,25 @@ def test_wiki_enrich_with_injected_fetch():
     assert out["key_concepts"][0]["wiki"]
 
 
+
+
+
+def test_retrieval_picks_relevant_chunks():
+    from notes_pipeline import retrieve_context
+
+    material = ("Today we study recursion. Recursion is a function calling itself. "
+                "A base case stops the recursion. "
+                "Later we discussed linked lists. A linked list is a chain of nodes. "
+                "Each node has a pointer to the next node. "
+                "Finally homework is due Friday.")
+    out = retrieve_context(
+        "what is a linked list?", [material], top_k=2, chunk_len=110)
+    joined = " ".join(out).lower()
+    assert "linked list" in joined
+    assert "homework" not in joined
+    assert retrieve_context("zzzz qqqq", [material], top_k=1)  # fallback
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

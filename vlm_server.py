@@ -595,6 +595,87 @@ def end_class(req: EndClassRequest):
     return {"ok": True, "note_id": req.note_id}
 
 # ===========================================================================
+# Lecture chatbot — a real instruct LLM (Qwen2.5-1.5B), not the tiny vision
+# model, plus retrieval so it answers from the RIGHT part of the lecture
+# instead of rambling. Free, local, no API keys.
+# ===========================================================================
+
+from notes_pipeline import retrieve_context
+
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "Qwen/Qwen2.5-1.5B-Instruct")
+
+_chat_model = None
+_chat_lock = threading.Lock()
+
+
+def get_chat():
+    global _chat_model
+    with _chat_lock:
+        if _chat_model is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            logger.info(f"Loading chat model {CHAT_MODEL}…")
+            tok = AutoTokenizer.from_pretrained(CHAT_MODEL)
+            mdl = AutoModelForCausalLM.from_pretrained(
+                CHAT_MODEL, torch_dtype="auto"
+            ).to(DEVICE)
+            _chat_model = (tok, mdl)
+            logger.success("Chat model ready.")
+    return _chat_model
+
+
+class ChatRequest(BaseModel):
+    question: str
+    transcript: str = ""            # full lecture transcript
+    notes: str = ""                 # class-notes overview + slide summaries
+    history: list[dict] = []        # [{"role": "user"/"assistant", "text": ...}]
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    # Retrieval: hand the model only the chunks that matter for THIS question.
+    relevant = retrieve_context(
+        req.question, [req.notes, req.transcript], top_k=6)
+    material = "\n- ".join(relevant) if relevant else "(no lecture material)"
+
+    tok, mdl = get_chat()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are the teacher of this class, answering a student's "
+                "question. Use ONLY the lecture material below. Be concrete: "
+                "quote or restate what was taught, give a short example when "
+                "helpful. If the material does not cover the question, say "
+                "so in one sentence and point to the closest covered topic. "
+                "Never invent facts.\n\nLECTURE MATERIAL:\n- " + material
+            ),
+        },
+    ]
+    for turn in req.history[-4:]:
+        role = "assistant" if turn.get("role") == "assistant" else "user"
+        messages.append({"role": role, "content": str(turn.get("text", ""))[:500]})
+    messages.append({"role": "user", "content": req.question})
+
+    prompt = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    inputs = tok(prompt, return_tensors="pt", truncation=True,
+                 max_length=3072).to(DEVICE)
+    generated = mdl.generate(
+        **inputs,
+        max_new_tokens=280,
+        do_sample=False,
+        repetition_penalty=1.1,
+        pad_token_id=tok.eos_token_id,
+    )
+    answer = tok.decode(
+        generated[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+    ).strip()
+    logger.info(f"Chat: {req.question[:60]!r} -> {answer[:80]!r}")
+    return {"text": answer}
+
+
+# ===========================================================================
 # Local translation — NLLB-200 (distilled 600M) running on this machine.
 # Free, offline, and unlike the public web APIs it has no daily quota, so
 # Hindi notes never silently fall back to English again.

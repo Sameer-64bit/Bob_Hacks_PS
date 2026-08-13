@@ -107,43 +107,39 @@ class SlideAi {
     return text;
   }
 
-  /// Lecture Q&A: answers a student's question grounded in the lecture
-  /// transcript (and notes context), then translated to their language.
+  /// Lecture Q&A on the proxy's dedicated chat LLM (/chat): the server
+  /// retrieves the question-relevant parts of the transcript + notes and
+  /// answers with a proper instruct model — grounded, not generic. The
+  /// answer is then translated to the student's language.
   static Future<String> askLecture({
     required String transcript,
     required String question,
     required AppLanguage target,
     String notesContext = '',
+    List<Map<String, String>> history = const [],
   }) async {
-    final lecture = transcript.length > 3500
-        ? transcript.substring(transcript.length - 3500)
-        : transcript;
-    final notes = notesContext.length > 1500
-        ? notesContext.substring(0, 1500)
-        : notesContext;
     final body = jsonEncode({
-      'prompt': 'You are the teacher of this class: patient, precise, and '
-          'you explain like you are talking to your own student. You know '
-          'everything below — the class notes and the lecture transcript. '
-          'Answer the student\'s question from this material; connect it to '
-          'what was taught, give a small example when helpful, and if the '
-          'class truly did not cover it, say what WAS covered that comes '
-          'closest.\n\nCLASS NOTES:\n$notes\n\nLECTURE TRANSCRIPT:\n'
-          '$lecture\n\nSTUDENT\'S QUESTION: $question\n\n'
-          'Answer as the teacher, in 3-6 clear sentences of plain English.',
+      'question': question,
+      'transcript': transcript,
+      'notes': notesContext,
+      'history': history,
     });
     http.Response response;
     try {
       response = await http
           .post(
-            Uri.parse('${await _serverUrl()}/generate'),
+            Uri.parse('${await _serverUrl()}/chat'),
             headers: {'content-type': 'application/json'},
             body: body,
           )
-          .timeout(const Duration(seconds: 90));
+          .timeout(const Duration(seconds: 120));
     } catch (_) {
       _cachedUrl = null;
       throw Exception('Could not reach the AI server.');
+    }
+    if (response.statusCode == 404) {
+      throw Exception(
+          'The AI server needs a restart to enable the new chatbot.');
     }
     if (response.statusCode != 200) {
       throw Exception('AI server error (${response.statusCode}).');

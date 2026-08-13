@@ -140,6 +140,52 @@ def compose_notes(title, slide_summaries, per_slide_transcript, unassigned, lang
 
 
 # ---------------------------------------------------------------------------
+# Retrieval for the lecture chatbot: rank material chunks by relevance to
+# the question so the small chat model sees the RIGHT context, not a wall
+# of text it will ignore.
+# ---------------------------------------------------------------------------
+
+def _tokens(text):
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if w not in STOPWORDS and len(w) > 2}
+
+
+def chunk_material(text, max_len=300):
+    """Sentence-grouped chunks of roughly max_len chars."""
+    chunks, buf = [], ""
+    for sentence in split_sentences(text):
+        if len(buf) + len(sentence) + 1 > max_len and buf:
+            chunks.append(buf)
+            buf = sentence
+        else:
+            buf = f"{buf} {sentence}".strip()
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def retrieve_context(question, material_texts, top_k=6, chunk_len=260):
+    """Most question-relevant chunks across all material, original order
+    preserved. Falls back to the first chunks when nothing overlaps."""
+    q = _tokens(question)
+    chunks = []
+    for text in material_texts:
+        chunks.extend(chunk_material(text, max_len=chunk_len))
+    if not chunks:
+        return []
+    scored = []
+    for i, chunk in enumerate(chunks):
+        overlap = len(q & _tokens(chunk))
+        scored.append((overlap, i, chunk))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    picked = [t for t in scored[:top_k] if t[0] > 0]
+    if not picked:  # nothing matched — give the opening of the lecture
+        picked = scored[:top_k]
+    picked.sort(key=lambda t: t[1])  # restore narrative order
+    return [chunk for _, _, chunk in picked]
+
+
+# ---------------------------------------------------------------------------
 # Free imagery: attach a Wikipedia thumbnail + a one-line extract to the key
 # concepts so the notes get real illustrations (no API key needed).
 # ---------------------------------------------------------------------------
