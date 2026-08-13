@@ -1,14 +1,19 @@
 import 'dart:async';
 
+import 'package:cross_file/cross_file.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:record/record.dart';
 
 import '../../models/models.dart';
 import '../../models/models2.dart';
+import '../../services/ai.dart';
 import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
+import '../../services/repository3.dart';
 import '../../theme.dart';
 import 'board_controller.dart';
 import 'board_join.dart';
@@ -63,6 +68,14 @@ class _BoardScreenState extends State<BoardScreen> {
   final Set<String> _seenEvents = {};
   final List<ClassEvent> _popups = [];
 
+  // Lecture recording + slide-change timestamps for the notes pipeline
+  final AudioRecorder _lectureRecorder = AudioRecorder();
+  bool _lectureRecording = false;
+  DateTime? _audioStart;
+  final List<Map<String, dynamic>> _slideMarks = [];
+  int _lastSlideIndex = 0;
+  bool _endingClass = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,8 +88,47 @@ class _BoardScreenState extends State<BoardScreen> {
     _eventsSub?.cancel();
     _saveTimer?.cancel();
     _flushSaves();
+    _lectureRecorder.dispose();
     _board?.dispose();
     super.dispose();
+  }
+
+  Future<void> _toggleLectureRecording() async {
+    try {
+      if (_lectureRecording) {
+        // Stop only pauses conceptually — bytes are collected in _endClass.
+        return;
+      }
+      if (!await _lectureRecorder.hasPermission()) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Microphone permission was denied.')));
+        }
+        return;
+      }
+      await _lectureRecorder.start(
+        RecordConfig(
+            encoder: kIsWeb ? AudioEncoder.opus : AudioEncoder.aacLc),
+        path: 'lecture.m4a',
+      );
+      setState(() {
+        _lectureRecording = true;
+        _audioStart = DateTime.now();
+        _slideMarks
+          ..clear()
+          ..add({'index': _board?.current ?? 0, 'at': 0.0});
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                '🎙️ Recording the lecture — it becomes class notes when you end the class.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not record: $e')));
+      }
+    }
   }
 
   void _subscribeToClassEvents() {
@@ -105,6 +157,18 @@ class _BoardScreenState extends State<BoardScreen> {
       board.onSlideChanged = _markDirty;
       board.addListener(() {
         _revision++;
+        // Timestamp slide changes while the lecture is being recorded so
+        // the transcript can be aligned slide-by-slide.
+        if (_lectureRecording && board.current != _lastSlideIndex) {
+          _slideMarks.add({
+            'index': board.current,
+            'at': DateTime.now()
+                    .difference(_audioStart ?? DateTime.now())
+                    .inMilliseconds /
+                1000.0,
+          });
+        }
+        _lastSlideIndex = board.current;
         if (mounted) setState(() {});
       });
       if (!mounted) return;
@@ -324,17 +388,24 @@ class _BoardScreenState extends State<BoardScreen> {
     }
   }
 
-  /// Placeholder for the class-wrap-up flow (summary, attendance sync…).
-  /// For now it only confirms — the real implementation lands later.
+  /// Ends the class: uploads the lecture audio (if recorded) and every
+  /// slide to the AI proxy, which turns them into class notes. Students
+  /// watch a live progress bar until the notes are ready.
   Future<void> _endClass() async {
+    final classroom = widget.classroom;
+    final board = _board;
+    if (classroom == null || board == null || _endingClass) return;
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('End this class?'),
-        content: const Text(
-            'The board stays saved for the classroom. Wrap-up features '
-            '(class summary, attendance sync) arrive here soon.'),
+        content: Text(_lectureRecording
+            ? 'The lecture recording and every slide will be turned into '
+                'class notes for your students.'
+            : 'Every slide will be turned into class notes for your '
+                'students. (Tip: record the lecture next time for richer notes.)'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
@@ -347,9 +418,60 @@ class _BoardScreenState extends State<BoardScreen> {
         ],
       ),
     );
-    if (ok == true && mounted) {
+    if (ok != true || !mounted) return;
+
+    setState(() => _endingClass = true);
+    String? noteId;
+    try {
+      await _flushSaves();
+
+      // 1. Collect the lecture audio, if the teacher recorded one.
+      String? audioUrl;
+      if (_lectureRecording) {
+        final path = await _lectureRecorder.stop();
+        _lectureRecording = false;
+        if (path != null) {
+          final bytes = await XFile(path).readAsBytes();
+          audioUrl = await repo.uploadLectureAudio(
+              bytes, kIsWeb ? 'webm' : 'm4a');
+        }
+      }
+
+      // 2. Create the notes row students will watch, then render the slides.
+      noteId = await repo.createClassNotes(
+          classroomId: classroom.id, language: 'en');
+      final slides = <String>[];
+      for (final slide in board.slides) {
+        slides.add(await SlideAi.renderSlideBase64(slide));
+      }
+
+      // 3. Hand everything to the proxy — it updates progress from here on.
+      await repo.startClassNotesJob(
+        noteId: noteId,
+        language: 'en',
+        title: 'Class notes · ${classroomLabel(classroom)}',
+        slidePngsB64: slides,
+        slideMarks: _slideMarks,
+        audioUrl: audioUrl,
+        audioExt: kIsWeb ? 'webm' : 'm4a',
+      );
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Class ended — see you next time! 👋')));
+          content: Text(
+              'Class ended — notes are being prepared for your students. 👋')));
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (noteId != null) {
+        try {
+          await repo.markClassNotesFailed(noteId, e.toString());
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() => _endingClass = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not start the notes: $e')));
+      }
     }
   }
 
@@ -448,6 +570,9 @@ class _BoardScreenState extends State<BoardScreen> {
                   onFit: () => setState(_fit),
                   onSharePdf: _sharePdf,
                   scale: _scale,
+                  recording: _lectureRecording,
+                  onToggleRecording:
+                      widget.classroom == null ? null : _toggleLectureRecording,
                 ),
                 Expanded(
                   child: Row(
@@ -550,7 +675,8 @@ class _BoardScreenState extends State<BoardScreen> {
                   ),
                 ),
                 // Teachers see "End class" only on the final slide.
-                if (board.current == board.slides.length - 1)
+                if (widget.classroom != null &&
+                    board.current == board.slides.length - 1)
                   Positioned(
                     right: 16,
                     bottom: 16,
@@ -561,9 +687,16 @@ class _BoardScreenState extends State<BoardScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 18, vertical: 14),
                       ),
-                      onPressed: _endClass,
-                      icon: const Icon(Icons.stop_circle_outlined, size: 20),
-                      label: const Text('End class'),
+                      onPressed: _endingClass ? null : _endClass,
+                      icon: _endingClass
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white70))
+                          : const Icon(Icons.stop_circle_outlined, size: 20),
+                      label: Text(
+                          _endingClass ? 'Ending class…' : 'End class'),
                     ),
                   ),
               ],
@@ -662,6 +795,8 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onZoomOut;
   final VoidCallback onFit;
   final VoidCallback onSharePdf;
+  final bool recording;
+  final VoidCallback? onToggleRecording;
 
   const _TopBar({
     required this.board,
@@ -672,6 +807,8 @@ class _TopBar extends StatelessWidget {
     required this.onZoomOut,
     required this.onFit,
     required this.onSharePdf,
+    required this.recording,
+    required this.onToggleRecording,
   });
 
   @override
@@ -832,6 +969,20 @@ class _TopBar extends StatelessWidget {
               label: 'Share board as PDF',
               onTap: onSharePdf,
             ),
+            if (onToggleRecording != null)
+              Tooltip(
+                message: recording
+                    ? 'Recording the lecture for class notes'
+                    : 'Record the lecture (becomes class notes)',
+                child: IconButton(
+                  onPressed: onToggleRecording,
+                  icon: Icon(
+                    recording ? Icons.mic : Icons.mic_none,
+                    size: 21,
+                    color: recording ? const Color(0xFFE57373) : Colors.white70,
+                  ),
+                ),
+              ),
             const SizedBox(width: 10),
           ],
         ),

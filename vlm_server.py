@@ -94,50 +94,182 @@ class GenerateRequest(BaseModel):
     prompt: str
     image_b64: str = None
 
-@app.post("/generate")
-def generate(req: GenerateRequest):
-    logger.info(f"Received request with prompt: {req.prompt}")
-    
-    messages = [
-        {
-            "role": "user",
-            "content": []
-        }
-    ]
-    
-    image = None
-    if req.image_b64:
-        image_bytes = base64.b64decode(req.image_b64)
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+def run_vlm(prompt: str, image: Image.Image | None = None, max_new_tokens: int = 512) -> str:
+    """One SmolVLM generation — shared by /generate and the notes pipeline."""
+    messages = [{"role": "user", "content": []}]
+    if image is not None:
         messages[0]["content"].append({"type": "image"})
-        logger.info("Attached image to request.")
-        
-    messages[0]["content"].append({"type": "text", "text": req.prompt})
+    messages[0]["content"].append({"type": "text", "text": prompt})
 
     prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True)
-    
-    if image:
+    if image is not None:
         inputs = processor(text=prompt_text, images=[image], return_tensors="pt")
     else:
         inputs = processor(text=prompt_text, return_tensors="pt")
-        
     inputs = inputs.to(DEVICE)
-    
-    logger.info("Generating response...")
-    generated_ids = model.generate(**inputs, max_new_tokens=512)
-    generated_texts = processor.batch_decode(
-        generated_ids,
-        skip_special_tokens=True,
-    )
-    
-    output = generated_texts[0]
-    
-    # Extract only the assistant's response (removing the user prompt)
+
+    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
     if "Assistant:" in output:
         output = output.split("Assistant:")[-1].strip()
-    
+    return output
+
+
+@app.post("/generate")
+def generate(req: GenerateRequest):
+    logger.info(f"Received request with prompt: {req.prompt[:80]}")
+    image = None
+    if req.image_b64:
+        image = Image.open(io.BytesIO(base64.b64decode(req.image_b64))).convert("RGB")
+    output = run_vlm(req.prompt, image)
     logger.success(f"Generated response: {output[:100]}...")
     return {"text": output}
+
+
+# ===========================================================================
+# Class notes — "End class" pipeline
+#   slides (+ optional lecture audio with slide timestamps) -> whisper
+#   transcript -> SmolVLM slide reading -> structured notes JSON.
+#   Progress is written to Supabase so the app's progress bar fills live.
+# ===========================================================================
+
+import tempfile
+
+from notes_pipeline import align_segments, compose_notes, gemini_enhance
+
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")  # tiny/base = fast
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_whisper_model = None
+_whisper_lock = threading.Lock()
+
+
+def get_whisper():
+    """Lazy-load faster-whisper so the server starts fast without it."""
+    global _whisper_model
+    with _whisper_lock:
+        if _whisper_model is None:
+            from faster_whisper import WhisperModel
+
+            logger.info(f"Loading faster-whisper '{WHISPER_MODEL_SIZE}' (int8)…")
+            _whisper_model = WhisperModel(
+                WHISPER_MODEL_SIZE, device="auto", compute_type="int8"
+            )
+            logger.success("Whisper ready.")
+    return _whisper_model
+
+
+def supabase_update_note(note_id: str, fields: dict):
+    body = json.dumps(fields).encode()
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/class_notes?id=eq.{note_id}",
+        data=body,
+        method="PATCH",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not update note {note_id}: {e}")
+
+
+class EndClassRequest(BaseModel):
+    note_id: str
+    language: str = "en"
+    title: str = "Class notes"
+    slides: list[str] = []          # base64 PNGs, in order
+    slide_marks: list[dict] = []    # [{"index": int, "at": seconds}]
+    audio_b64: str = None
+    audio_url: str = None           # public URL (preferred for big files)
+    audio_ext: str = "webm"
+
+
+def _transcribe(req: EndClassRequest):
+    """faster-whisper transcription (from the `transcription` branch)."""
+    audio_bytes = None
+    if req.audio_b64:
+        audio_bytes = base64.b64decode(req.audio_b64)
+    elif req.audio_url:
+        with urllib.request.urlopen(req.audio_url, timeout=60) as resp:
+            audio_bytes = resp.read()
+    if not audio_bytes:
+        return []
+    with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
+        f.write(audio_bytes)
+        path = f.name
+    segments, info = get_whisper().transcribe(path, vad_filter=True)
+    out = [
+        {"start": float(s.start), "end": float(s.end), "text": s.text}
+        for s in segments
+    ]
+    logger.info(f"Transcribed {len(out)} segments ({info.language}, {info.duration:.0f}s)")
+    return out
+
+
+def _process_class_notes(req: EndClassRequest):
+    note = lambda p, s: supabase_update_note(req.note_id, {"progress": p, "stage": s})  # noqa: E731
+    try:
+        # 1. Transcribe lecture audio (skipped cleanly when there is none).
+        note(5, "Transcribing the lecture…")
+        segments = []
+        try:
+            segments = _transcribe(req)
+        except Exception as e:  # noqa: BLE001 — notes still work without audio
+            logger.warning(f"Transcription failed, continuing with slides only: {e}")
+
+        # 2. Read every slide with SmolVLM (the model is already in memory).
+        slide_summaries = []
+        total = max(len(req.slides), 1)
+        for i, b64 in enumerate(req.slides):
+            note(20 + int(55 * i / total), f"Reading slide {i + 1} of {total}…")
+            try:
+                image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+                text = run_vlm(
+                    "Read this whiteboard slide and summarise what is written and "
+                    "drawn on it in 2-4 sentences for class notes.",
+                    image,
+                    max_new_tokens=200,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Slide {i} failed: {e}")
+                text = ""
+            slide_summaries.append(text)
+
+        # 3. Align transcript to slides + compose the notes JSON.
+        note(80, "Writing the notes…")
+        per_slide, unassigned = align_segments(segments, req.slide_marks, len(req.slides))
+        notes = compose_notes(req.title, slide_summaries, per_slide, unassigned, req.language)
+
+        # 4. Optional Gemini polish (Content_Generation's schema), time-boxed.
+        if GEMINI_API_KEY:
+            note(90, "Polishing with Gemini…")
+            notes = gemini_enhance(notes, GEMINI_API_KEY)
+
+        supabase_update_note(
+            req.note_id,
+            {"status": "ready", "progress": 100, "stage": "Ready", "notes": notes},
+        )
+        logger.success(f"Notes ready for {req.note_id}")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Class notes pipeline failed")
+        supabase_update_note(
+            req.note_id, {"status": "failed", "stage": "Failed", "error": str(e)[:500]}
+        )
+
+
+@app.post("/end_class")
+def end_class(req: EndClassRequest):
+    logger.info(
+        f"End class: note={req.note_id} slides={len(req.slides)} "
+        f"marks={len(req.slide_marks)} audio={'yes' if (req.audio_b64 or req.audio_url) else 'no'}"
+    )
+    threading.Thread(target=_process_class_notes, args=(req,), daemon=True).start()
+    return {"ok": True, "note_id": req.note_id}
 
 @app.get("/health")
 def health():

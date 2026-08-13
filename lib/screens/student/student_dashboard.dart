@@ -4,8 +4,10 @@ import 'package:table_calendar/table_calendar.dart';
 import '../../data/branches.dart';
 import '../../data/languages.dart';
 import '../../models/models.dart';
+import '../../models/models3.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
+import '../../services/repository3.dart';
 import '../../services/session.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -14,6 +16,7 @@ import '../board/live_board_view.dart';
 import '../landing.dart';
 import 'assignments_tab.dart';
 import 'doubts_tab.dart';
+import 'notes_screen.dart';
 
 class StudentDashboard extends StatefulWidget {
   final Student student;
@@ -357,22 +360,118 @@ class _StudentDashboardState extends State<StudentDashboard> {
               ],
             ),
             const SizedBox(height: 20),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Palette.paper,
-                borderRadius: BorderRadius.circular(12),
+            if (_classroom != null)
+              ClassNotesSection(
+                classroom: _classroom!,
+                languageCode: _language,
               ),
-              child: Text(
-                'Class notes, attendance and materials arrive here in the next '
-                'update.',
-                style: text.bodySmall,
-              ),
-            ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Live class-notes status inside the class sheet: a progress bar that
+/// fills while the AI prepares the notes, then a "View class notes" button.
+class ClassNotesSection extends StatelessWidget {
+  final Classroom classroom;
+  final String languageCode;
+
+  const ClassNotesSection(
+      {super.key, required this.classroom, required this.languageCode});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return StreamBuilder<ClassNotes?>(
+      stream: repo.streamLatestClassNotes(classroom.id),
+      builder: (context, snapshot) {
+        final notes = snapshot.data;
+        final Widget child;
+        if (notes == null) {
+          child = Text(
+            'Class notes appear here after your teacher ends a class.',
+            style: text.bodySmall,
+          );
+        } else if (notes.isProcessing) {
+          child = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Palette.navy),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text('Preparing class notes — ${notes.stage}',
+                        style: text.titleMedium?.copyWith(fontSize: 13.5)),
+                  ),
+                  Text('${notes.progress}%', style: text.bodySmall),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: notes.progress / 100),
+                  duration: const Duration(milliseconds: 400),
+                  builder: (context, value, _) => LinearProgressIndicator(
+                    value: value,
+                    minHeight: 6,
+                    backgroundColor: Palette.line,
+                    color: Palette.marigold,
+                  ),
+                ),
+              ),
+            ],
+          );
+        } else if (notes.isFailed) {
+          child = Text(
+            'Notes generation failed — ask your teacher to end the class '
+            'again. (${notes.error ?? 'unknown error'})',
+            style: text.bodySmall?.copyWith(color: Palette.red),
+          );
+        } else {
+          child = Row(
+            children: [
+              const Icon(Icons.auto_stories_outlined,
+                  color: Palette.sage, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('Class notes are ready',
+                    style: text.titleMedium?.copyWith(fontSize: 13.5)),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 16)),
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => NotesScreen(
+                    notes: notes,
+                    classroom: classroom,
+                    languageCode: languageCode,
+                  ),
+                )),
+                child: const Text('View class notes'),
+              ),
+            ],
+          );
+        }
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Palette.paper,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: child,
+        );
+      },
     );
   }
 }

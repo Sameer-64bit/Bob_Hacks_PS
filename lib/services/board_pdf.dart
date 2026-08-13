@@ -14,6 +14,8 @@ import '../screens/board/board_painter.dart';
 class BoardPdf {
   /// Renders one slide's strokes to a PNG at 3/4 canvas resolution
   /// (1440×810 — crisp in a PDF without bloating the file).
+  static Future<Uint8List> slidePng(BoardSlide slide) => _slidePng(slide);
+
   static Future<Uint8List> _slidePng(BoardSlide slide) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);

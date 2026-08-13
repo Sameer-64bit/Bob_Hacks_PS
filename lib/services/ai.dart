@@ -29,6 +29,10 @@ class SlideAi {
   static String? _cachedUrl;
   static DateTime _cachedAt = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// Public entry for other services that need the proxy address
+  /// (e.g. the class-notes job started by "End class").
+  static Future<String> resolveServerUrl() => _serverUrl();
+
   /// Looks up the proxy's current address from Supabase (cached for 15 s).
   static Future<String> _serverUrl() async {
     if (_envServerUrl.isNotEmpty) return _envServerUrl;

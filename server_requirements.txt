@@ -1,0 +1,11 @@
+# AI proxy server (vlm_server.py) — install with:
+#   pip install -r server_requirements.txt
+torch
+transformers
+pillow
+fastapi
+uvicorn
+pydantic
+loguru
+# Class-notes pipeline (End class -> transcript -> notes)
+faster-whisper
