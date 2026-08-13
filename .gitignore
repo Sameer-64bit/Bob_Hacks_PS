@@ -49,6 +49,9 @@ linux/flutter/ephemeral/
 windows/flutter/ephemeral/
 macos/Flutter/ephemeral/
 
+# Secrets — real values live here, env.example.json is the committed template
+env.json
+
 # Local demo artifacts and heavy working folders
 video_to_ppt/
 *.lectra.json

@@ -1,19 +1,24 @@
-/// Supabase connection — paste your project values here.
+/// Supabase connection — supplied at build time, never committed.
 ///
-/// Supabase Dashboard -> Project Settings -> API:
-///   * Project URL  -> [supabaseUrl]
-///   * anon public  -> [supabaseAnonKey]
+/// Copy `env.example.json` to `env.json`, fill in your values, then run:
+///   flutter run --dart-define-from-file=env.json
 ///
-/// They can also be passed at build time:
+/// Get the values from Supabase Dashboard -> Project Settings -> API:
+///   * Project URL  -> SUPABASE_URL
+///   * anon public  -> SUPABASE_ANON_KEY
+///
+/// Individual flags work too:
 ///   flutter run --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
+///
+/// `env.json` is gitignored. With nothing supplied the app opens [SetupScreen]
+/// instead of crashing.
 class AppConfig {
   static const String _envUrl = String.fromEnvironment('SUPABASE_URL');
   static const String _envKey = String.fromEnvironment('SUPABASE_ANON_KEY');
 
-  // Paste your values between the quotes below.
-  static const String _pastedUrl = 'https://zxudswchxzfmfydulrvi.supabase.co';
-  static const String _pastedKey =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp4dWRzd2NoeHpmbWZ5ZHVscnZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MzI5ODIsImV4cCI6MjEwMjEwODk4Mn0.i6qbTyW2fnNkdF4enIIIJzCnTVY1pRHntVIFqyOisDU';
+  // Deliberately empty — credentials do not live in source control.
+  static const String _pastedUrl = '';
+  static const String _pastedKey = '';
 
   static String get supabaseUrl => _envUrl.isNotEmpty ? _envUrl : _pastedUrl;
   static String get supabaseAnonKey => _envKey.isNotEmpty ? _envKey : _pastedKey;
