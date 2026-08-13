@@ -9,3 +9,4 @@ pydantic
 loguru
 # Class-notes pipeline (End class -> transcript -> notes)
 faster-whisper
+sentencepiece

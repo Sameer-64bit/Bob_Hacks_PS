@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'ai.dart';
+
 /// Free text translation via the MyMemory API (no key needed, CORS-friendly,
 /// works from web builds). The small VLM only reads/writes English well, so
 /// its output is piped through this to reach the student's language.
@@ -47,11 +49,35 @@ class Translator {
     return chunks.where((c) => c.trim().isNotEmpty).toList();
   }
 
+  /// Local NLLB model on the AI proxy — no quota, no rate limits. Returns
+  /// null when the proxy can't be reached (caller falls back to MyMemory).
+  static Future<List<String>?> _proxyTranslate(
+      List<String> texts, String targetCode) async {
+    try {
+      final server = await SlideAi.resolveServerUrl();
+      final response = await http
+          .post(
+            Uri.parse('$server/translate'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode({'texts': texts, 'target': targetCode}),
+          )
+          .timeout(const Duration(seconds: 120));
+      if (response.statusCode != 200) return null;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final out = (data['translations'] as List).cast<String>();
+      return out.length == texts.length ? out : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Translates [text] from English into [targetCode] (e.g. 'hi').
-  /// Returns the input untouched when the target is English.
-  /// Retries each chunk once — the free tier throws sporadic 429s.
+  /// Local NLLB on the proxy first (fast, unlimited); the free MyMemory
+  /// web API only as a fallback when the proxy is unreachable.
   static Future<String> translate(String text, String targetCode) async {
     if (targetCode == 'en' || text.trim().isEmpty) return text;
+    final local = await _proxyTranslate([text], targetCode);
+    if (local != null && local.first.trim().isNotEmpty) return local.first;
     final results = <String>[];
     for (final chunk in chunkText(text)) {
       results.add(await _translateChunk(chunk, targetCode, retriesLeft: 2));
@@ -101,11 +127,21 @@ class Translator {
     }
   }
 
-  /// Runs translation jobs with bounded concurrency (the free API rate-
-  /// limits aggressive parallel bursts, which silently broke whole pages).
+  /// Batch translation: ONE request to the proxy's local model translates
+  /// the whole page at once. Falls back to bounded-concurrency MyMemory
+  /// only when the proxy is down.
   static Future<List<String>> translateAll(
       List<String> texts, String targetCode,
       {int concurrency = 3}) async {
+    if (targetCode == 'en') return texts;
+    final local = await _proxyTranslate(texts, targetCode);
+    if (local != null) {
+      // Keep originals for any empty translations.
+      return [
+        for (var i = 0; i < texts.length; i++)
+          local[i].trim().isEmpty ? texts[i] : local[i],
+      ];
+    }
     final results = List<String>.filled(texts.length, '');
     var next = 0;
     Future<void> worker() async {

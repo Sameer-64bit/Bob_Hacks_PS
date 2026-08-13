@@ -594,6 +594,93 @@ def end_class(req: EndClassRequest):
     threading.Thread(target=_process_class_notes, args=(req,), daemon=True).start()
     return {"ok": True, "note_id": req.note_id}
 
+# ===========================================================================
+# Local translation — NLLB-200 (distilled 600M) running on this machine.
+# Free, offline, and unlike the public web APIs it has no daily quota, so
+# Hindi notes never silently fall back to English again.
+# ===========================================================================
+
+TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/nllb-200-distilled-600M")
+
+# app language code -> NLLB (FLORES-200) code
+NLLB_CODES = {
+    "hi": "hin_Deva", "bn": "ben_Beng", "ta": "tam_Taml", "te": "tel_Telu",
+    "mr": "mar_Deva", "gu": "guj_Gujr", "pa": "pan_Guru", "kn": "kan_Knda",
+    "ml": "mal_Mlym", "or": "ory_Orya", "as": "asm_Beng", "ur": "urd_Arab",
+    "ne": "npi_Deva", "es": "spa_Latn", "fr": "fra_Latn", "de": "deu_Latn",
+    "ar": "arb_Arab", "zh-CN": "zho_Hans", "ja": "jpn_Jpan", "en": "eng_Latn",
+}
+
+_nllb = None
+_nllb_lock = threading.Lock()
+
+
+def get_nllb():
+    global _nllb
+    with _nllb_lock:
+        if _nllb is None:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            logger.info(f"Loading translator {TRANSLATE_MODEL}…")
+            tok = AutoTokenizer.from_pretrained(TRANSLATE_MODEL, src_lang="eng_Latn")
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATE_MODEL).to(DEVICE)
+            _nllb = (tok, mdl)
+            logger.success("Translator ready.")
+    return _nllb
+
+
+def _split_for_translation(text: str, max_len: int = 380) -> list[str]:
+    import re as _re
+
+    pieces, buf = [], ""
+    for sentence in _re.split(r"(?<=[.!?\n])\s+", text.strip()):
+        if not sentence:
+            continue
+        if len(buf) + len(sentence) + 1 > max_len and buf:
+            pieces.append(buf)
+            buf = sentence
+        else:
+            buf = f"{buf} {sentence}".strip()
+    if buf:
+        pieces.append(buf)
+    return pieces or [""]
+
+
+class TranslateRequest(BaseModel):
+    texts: list[str]
+    target: str = "hi"
+
+
+@app.post("/translate")
+def translate(req: TranslateRequest):
+    code = NLLB_CODES.get(req.target)
+    if code is None or req.target == "en":
+        return {"translations": req.texts}
+    tok, mdl = get_nllb()
+    bos = tok.convert_tokens_to_ids(code)
+
+    # Flatten every text into sentence chunks, translate them in one batch,
+    # then stitch each text back together.
+    chunk_lists = [_split_for_translation(t) if t.strip() else [""] for t in req.texts]
+    flat = [c for chunks in chunk_lists for c in chunks]
+    outputs: list[str] = []
+    BATCH = 8
+    for i in range(0, len(flat), BATCH):
+        batch = flat[i : i + BATCH]
+        enc = tok(batch, return_tensors="pt", padding=True, truncation=True,
+                  max_length=512).to(DEVICE)
+        gen = mdl.generate(**enc, forced_bos_token_id=bos, max_new_tokens=512)
+        outputs.extend(tok.batch_decode(gen, skip_special_tokens=True))
+
+    translations, cursor = [], 0
+    for chunks in chunk_lists:
+        take = outputs[cursor : cursor + len(chunks)]
+        cursor += len(chunks)
+        translations.append(" ".join(t for t in take if t).strip())
+    logger.info(f"Translated {len(req.texts)} texts -> {req.target}")
+    return {"translations": translations}
+
+
 @app.get("/health")
 def health():
     return {"ok": True}

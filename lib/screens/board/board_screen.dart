@@ -68,6 +68,42 @@ class _BoardScreenState extends State<BoardScreen> {
   String _saveStatus = 'Saved';
   int _revision = 0;
 
+  // Live-stroke streaming: while drawing, the in-progress stroke is pushed
+  // every ~350ms so students see the pen move in real time.
+  Timer? _liveStrokeTimer;
+  bool _liveSaving = false;
+
+  void _startLiveStroke() {
+    final classroom = _classroom;
+    final session = _session;
+    if (classroom == null || session == null) return;
+    _liveStrokeTimer?.cancel();
+    _liveStrokeTimer =
+        Timer.periodic(const Duration(milliseconds: 350), (_) async {
+      final board = _board;
+      final active = board?.active;
+      if (board == null || active == null || _liveSaving) return;
+      _liveSaving = true;
+      try {
+        final preview = BoardSlide(
+          index: board.current,
+          strokes: [...board.slide.strokes, active],
+          backgroundUrl: board.slide.backgroundUrl,
+        );
+        await repo.saveSessionSlide(classroom.id, session.id, preview);
+      } catch (_) {
+        // transient network hiccup — the next tick retries
+      } finally {
+        _liveSaving = false;
+      }
+    });
+  }
+
+  void _stopLiveStroke() {
+    _liveStrokeTimer?.cancel();
+    _liveStrokeTimer = null;
+  }
+
   // Live class events (raised hands / chats from students)
   StreamSubscription<List<ClassEvent>>? _eventsSub;
   final DateTime _joinedAt = DateTime.now();
@@ -100,6 +136,7 @@ class _BoardScreenState extends State<BoardScreen> {
   void dispose() {
     _eventsSub?.cancel();
     _saveTimer?.cancel();
+    _liveStrokeTimer?.cancel();
     _chunkTimer?.cancel();
     _flushSaves();
     _lectureRecorder.dispose();
@@ -243,7 +280,7 @@ class _BoardScreenState extends State<BoardScreen> {
     _dirty.add(slide.index);
     _saveStatus = 'Saving…';
     _saveTimer?.cancel();
-    _saveTimer = Timer(const Duration(milliseconds: 900), _flushSaves);
+    _saveTimer = Timer(const Duration(milliseconds: 250), _flushSaves);
   }
 
   Future<void> _flushSaves() async {
@@ -319,6 +356,7 @@ class _BoardScreenState extends State<BoardScreen> {
     if (_pointers.length == 2) {
       // Second finger: abandon the single-pointer gesture, start pinch.
       if (_gesturePointer != null) {
+        _stopLiveStroke();
         board.cancelStroke();
         board.setMarquee(null);
         if (_movingSelection) board.moveEnd();
@@ -345,6 +383,7 @@ class _BoardScreenState extends State<BoardScreen> {
       case BoardTool.pen:
       case BoardTool.highlighter:
         board.startStroke(canvasPt);
+        _startLiveStroke();
       case BoardTool.eraser:
         board.eraseBegin();
         board.eraseAt(canvasPt, 14 / _scale + 8);
@@ -420,6 +459,7 @@ class _BoardScreenState extends State<BoardScreen> {
     switch (board.tool) {
       case BoardTool.pen:
       case BoardTool.highlighter:
+        _stopLiveStroke();
         board.endStroke();
       case BoardTool.eraser:
         board.eraseEnd();
