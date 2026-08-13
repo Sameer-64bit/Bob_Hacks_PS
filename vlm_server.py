@@ -184,8 +184,8 @@ class EndClassRequest(BaseModel):
     title: str = "Class notes"
     slides: list[str] = []          # base64 PNGs, in order
     slide_marks: list[dict] = []    # [{"index": int, "at": seconds}]
-    audio_b64: str = None
-    audio_url: str = None           # public URL (preferred for big files)
+    audio_b64: str | None = None
+    audio_url: str | None = None           # public URL (preferred for big files)
     audio_ext: str = "webm"
 
 
