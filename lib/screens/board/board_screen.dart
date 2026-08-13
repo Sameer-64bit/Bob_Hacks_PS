@@ -505,6 +505,7 @@ class _BoardScreenState extends State<BoardScreen> {
         // report them as dense so the VLM reads them.
         strokeCounts.add(
             slide.backgroundUrl != null ? 999 : slide.strokes.length);
+        await Future<void>.delayed(Duration.zero); // keep the UI breathing
       }
 
       // 3. Hand everything to the proxy — it updates progress from here on.

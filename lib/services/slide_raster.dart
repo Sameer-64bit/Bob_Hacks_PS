@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
@@ -60,4 +62,14 @@ class SlideRaster {
     final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
     return bytes!.buffer.asUint8List();
   }
+
+  /// Base64 of a rendered slide — encoded off the UI thread, with a frame
+  /// yield so long multi-slide loops can't freeze the app.
+  static Future<String> pngBase64(BoardSlide slide, {double scale = 0.5}) async {
+    final bytes = await png(slide, scale: scale);
+    await Future<void>.delayed(Duration.zero); // let a frame through
+    return compute(_encodeBase64, bytes);
+  }
 }
+
+String _encodeBase64(Uint8List bytes) => base64Encode(bytes);

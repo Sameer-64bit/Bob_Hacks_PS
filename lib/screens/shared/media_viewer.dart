@@ -37,6 +37,8 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   final _audio = AudioPlayer();
   bool _audioPlaying = false;
 
+  bool _wasPlaying = false;
+
   // Lecture subtitles
   List<LiveCaption> _captions = [];
   final Map<String, String> _subtitleCache = {};
@@ -53,8 +55,10 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
           .catchError((_) {});
     }
     _audio.onPositionChanged.listen((p) {
-      if (mounted && widget.media.isAudio) {
-        setState(() => _positionS = p.inMilliseconds / 1000.0);
+      final s = p.inMilliseconds / 1000.0;
+      // Throttle: rebuilding the whole screen on every tick causes jank.
+      if (mounted && widget.media.isAudio && (s - _positionS).abs() >= 0.25) {
+        setState(() => _positionS = s);
       }
     });
   }
@@ -86,9 +90,14 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
         final controller = VideoPlayerController.file(file);
         await controller.initialize();
         controller.addListener(() {
-          if (mounted) {
-            setState(() => _positionS =
-                controller.value.position.inMilliseconds / 1000.0);
+          final s = controller.value.position.inMilliseconds / 1000.0;
+          // The video reports position ~60x/second; rebuilding the whole
+          // screen (subtitles + chat) that often froze low-end phones.
+          if (mounted &&
+              ((s - _positionS).abs() >= 0.25 ||
+                  controller.value.isPlaying != _wasPlaying)) {
+            _wasPlaying = controller.value.isPlaying;
+            setState(() => _positionS = s);
           }
         });
         _video = controller;

@@ -59,8 +59,8 @@ class SlideAi {
 
   /// Renders a slide (background image included) to a PNG at half canvas
   /// resolution — small payload, still readable for the VLM.
-  static Future<String> renderSlideBase64(BoardSlide slide) async =>
-      base64Encode(await SlideRaster.png(slide, scale: 0.5));
+  static Future<String> renderSlideBase64(BoardSlide slide) =>
+      SlideRaster.pngBase64(slide, scale: 0.5);
 
   /// The raw HTTP call to the proxy — reusable for translation, description…
   static Future<String> _ask(BoardSlide slide, String prompt) async {

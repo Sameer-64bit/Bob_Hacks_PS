@@ -219,6 +219,7 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
             pngs.add(await SlideAi.renderSlideBase64(slide));
             strokeCounts
                 .add(slide.backgroundUrl != null ? 999 : slide.strokes.length);
+            await Future<void>.delayed(Duration.zero); // keep the UI breathing
           }
 
           stage.value = 'Sending the lecture to the AI server…';

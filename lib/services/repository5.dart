@@ -18,6 +18,36 @@ Map<String, dynamic> packMediaInIsolate(Uint8List bytes) {
   return {'cipher': packed.cipher, 'iv': packed.ivHex};
 }
 
+/// Isolate entry: decrypt + gunzip on open — a 50 MB file would freeze
+/// the UI (and trigger the "app not responding" dialog) otherwise.
+Uint8List unpackMediaInIsolate(Map<String, dynamic> args) =>
+    MediaCodec.unpack(args['cipher'] as Uint8List, args['iv'] as String);
+
+/// Isolate entry: base64 of a whole video + building the multi-MB JSON
+/// request body is far too heavy for the UI thread.
+String lectureBodyInIsolate(Map<String, dynamic> args) => jsonEncode({
+      'media_id': args['media_id'],
+      'note_id': args['note_id'],
+      'language': args['language'],
+      'title': args['title'],
+      'audio_b64': base64Encode(args['media_bytes'] as Uint8List),
+      'audio_ext': args['media_ext'],
+      'slides': args['slides'],
+      'stroke_counts': args['stroke_counts'],
+      'slide_marks': args['slide_marks'],
+    });
+
+/// Isolate entry: encode one live-audio chunk off the UI thread.
+String liveChunkBodyInIsolate(Map<String, dynamic> args) => jsonEncode({
+      'session_id': args['session_id'],
+      'classroom_id': args['classroom_id'],
+      'slide_index': args['slide_index'],
+      'chunk_index': args['chunk_index'],
+      'offset_s': args['offset_s'],
+      'audio_b64': base64Encode(args['audio_bytes'] as Uint8List),
+      'audio_ext': args['audio_ext'],
+    });
+
 /// Compression + encryption for class media. Static so it's unit-testable
 /// without a Supabase connection.
 class MediaCodec {
@@ -67,19 +97,20 @@ extension RepositoryV7 on Repository {
     required String audioExt,
   }) async {
     final server = await SlideAi.resolveServerUrl();
+    final body = await compute(liveChunkBodyInIsolate, {
+      'session_id': sessionId,
+      'classroom_id': classroomId,
+      'slide_index': slideIndex,
+      'chunk_index': chunkIndex,
+      'offset_s': offsetSeconds,
+      'audio_bytes': audioBytes,
+      'audio_ext': audioExt,
+    });
     await http
         .post(
           Uri.parse('$server/live_chunk'),
           headers: {'content-type': 'application/json'},
-          body: jsonEncode({
-            'session_id': sessionId,
-            'classroom_id': classroomId,
-            'slide_index': slideIndex,
-            'chunk_index': chunkIndex,
-            'offset_s': offsetSeconds,
-            'audio_b64': base64Encode(audioBytes),
-            'audio_ext': audioExt,
-          }),
+          body: body,
         )
         .timeout(const Duration(seconds: 30));
   }
@@ -172,21 +203,22 @@ extension RepositoryV7 on Repository {
     List<Map<String, dynamic>> slideMarks = const [],
   }) async {
     final server = await SlideAi.resolveServerUrl();
+    final body = await compute(lectureBodyInIsolate, {
+      'media_id': mediaId,
+      'note_id': noteId,
+      'language': language,
+      'title': title,
+      'media_bytes': mediaBytes,
+      'media_ext': mediaExt,
+      'slides': slidePngsB64,
+      'stroke_counts': strokeCounts,
+      'slide_marks': slideMarks,
+    });
     final response = await http
         .post(
           Uri.parse('$server/lecture_media'),
           headers: {'content-type': 'application/json'},
-          body: jsonEncode({
-            'media_id': mediaId,
-            'note_id': noteId,
-            'language': language,
-            'title': title,
-            'audio_b64': base64Encode(mediaBytes),
-            'audio_ext': mediaExt,
-            'slides': slidePngsB64,
-            'stroke_counts': strokeCounts,
-            'slide_marks': slideMarks,
-          }),
+          body: body,
         )
         .timeout(const Duration(minutes: 3));
     if (response.statusCode != 200) {
@@ -216,6 +248,7 @@ extension RepositoryV7 on Repository {
     if (response.statusCode != 200) {
       throw Exception('Could not download media (HTTP ${response.statusCode}).');
     }
-    return MediaCodec.unpack(response.bodyBytes, media.iv);
+    return compute(
+        unpackMediaInIsolate, {'cipher': response.bodyBytes, 'iv': media.iv});
   }
 }
