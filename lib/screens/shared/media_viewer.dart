@@ -8,7 +8,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../data/languages.dart';
 import '../../models/models3.dart';
+import '../../services/ai.dart';
 import '../../services/repository.dart';
 import '../../services/repository5.dart';
 import '../../services/translator.dart';
@@ -159,42 +161,71 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
       );
     }
     if (media.isAudio) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.graphic_eq, size: 56, color: Palette.navy),
-            const SizedBox(height: 18),
-            FilledButton.icon(
-              onPressed: () async {
-                if (_audioPlaying) {
-                  await _audio.stop();
-                  setState(() => _audioPlaying = false);
-                } else {
-                  await _audio.play(BytesSource(bytes));
-                  setState(() => _audioPlaying = true);
-                  _audio.onPlayerComplete.first.then((_) {
-                    if (mounted) setState(() => _audioPlaying = false);
-                  });
-                }
-              },
-              icon: Icon(_audioPlaying ? Icons.stop : Icons.play_arrow),
-              label: Text(_audioPlaying ? 'Stop' : 'Play'),
-            ),
-            if (_captions.isNotEmpty || media.sessionId != null) ...[
-              const SizedBox(height: 24),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: _SubtitleBar(
-                  caption: _currentCaption,
-                  status: media.transcriptStatus,
-                  languageCode: widget.languageCode,
-                  cache: _subtitleCache,
-                ),
+      return Column(
+        children: [
+          const SizedBox(height: 24),
+          const Icon(Icons.graphic_eq, size: 56, color: Palette.navy),
+          const SizedBox(height: 14),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Back 10 seconds',
+                onPressed: () => _audio.seek(Duration(
+                    seconds: (_positionS - 10).clamp(0, 1e9).toInt())),
+                icon: const Icon(Icons.replay_10, color: Palette.dark),
+              ),
+              const SizedBox(width: 6),
+              IconButton.filled(
+                style: IconButton.styleFrom(backgroundColor: Palette.navy),
+                onPressed: () async {
+                  if (_audioPlaying) {
+                    await _audio.pause();
+                    setState(() => _audioPlaying = false);
+                  } else {
+                    await _audio.play(BytesSource(bytes));
+                    setState(() => _audioPlaying = true);
+                    _audio.onPlayerComplete.first.then((_) {
+                      if (mounted) setState(() => _audioPlaying = false);
+                    });
+                  }
+                },
+                icon: Icon(
+                    _audioPlaying ? Icons.pause : Icons.play_arrow,
+                    color: Colors.white),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: 'Forward 10 seconds',
+                onPressed: () => _audio
+                    .seek(Duration(seconds: (_positionS + 10).toInt())),
+                icon: const Icon(Icons.forward_10, color: Palette.dark),
               ),
             ],
+          ),
+          if (_captions.isNotEmpty || media.sessionId != null) ...[
+            const SizedBox(height: 14),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: _SubtitleBar(
+                caption: _currentCaption,
+                status: media.transcriptStatus,
+                languageCode: widget.languageCode,
+                cache: _subtitleCache,
+              ),
+            ),
           ],
-        ),
+          if (media.sessionId != null)
+            Expanded(
+              child: _LectureChat(
+                captions: _captions,
+                languageCode: widget.languageCode,
+                title: media.title,
+              ),
+            )
+          else
+            const Spacer(),
+        ],
       );
     }
     if (media.isVideo) {
@@ -211,44 +242,294 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
           ),
         );
       }
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AspectRatio(
-              aspectRatio: video.value.aspectRatio,
-              child: Stack(
-                alignment: Alignment.bottomCenter,
-                children: [
-                  VideoPlayer(video),
-                  if (_captions.isNotEmpty || media.sessionId != null)
-                    Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: _SubtitleBar(
-                        caption: _currentCaption,
-                        status: media.transcriptStatus,
-                        languageCode: widget.languageCode,
-                        cache: _subtitleCache,
-                        onDark: true,
-                      ),
+      return Column(
+        children: [
+          AspectRatio(
+            aspectRatio: video.value.aspectRatio,
+            child: Stack(
+              alignment: Alignment.bottomCenter,
+              children: [
+                VideoPlayer(video),
+                if (_captions.isNotEmpty || media.sessionId != null)
+                  Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: _SubtitleBar(
+                      caption: _currentCaption,
+                      status: media.transcriptStatus,
+                      languageCode: widget.languageCode,
+                      cache: _subtitleCache,
+                      onDark: true,
                     ),
-                ],
+                  ),
+              ],
+            ),
+          ),
+          _VideoControls(video: video),
+          if (media.sessionId != null)
+            Expanded(
+              child: _LectureChat(
+                captions: _captions,
+                languageCode: widget.languageCode,
+                title: media.title,
               ),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: () => setState(() {
-                video.value.isPlaying ? video.pause() : video.play();
-              }),
-              icon: Icon(
-                  video.value.isPlaying ? Icons.pause : Icons.play_arrow),
-              label: Text(video.value.isPlaying ? 'Pause' : 'Play'),
-            ),
-          ],
-        ),
+            )
+          else
+            const Spacer(),
+        ],
       );
     }
     return const Center(child: Text('Unsupported media type.'));
+  }
+}
+
+/// Play/pause, ±10 s, and a scrubber with elapsed/total time.
+class _VideoControls extends StatelessWidget {
+  final VideoPlayerController video;
+  const _VideoControls({required this.video});
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = video.value;
+    final duration = value.duration;
+    final position = value.position;
+    return Container(
+      color: Palette.card,
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Text(_fmt(position),
+                  style: const TextStyle(fontSize: 11, color: Palette.faint)),
+              Expanded(
+                child: Slider(
+                  value: position.inMilliseconds
+                      .clamp(0, duration.inMilliseconds)
+                      .toDouble(),
+                  max: duration.inMilliseconds.toDouble().clamp(1, 1e12),
+                  activeColor: Palette.navy,
+                  inactiveColor: Palette.line,
+                  onChanged: (ms) =>
+                      video.seekTo(Duration(milliseconds: ms.round())),
+                ),
+              ),
+              Text(_fmt(duration),
+                  style: const TextStyle(fontSize: 11, color: Palette.faint)),
+            ],
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Back 10 seconds',
+                onPressed: () => video.seekTo(
+                    position - const Duration(seconds: 10)),
+                icon: const Icon(Icons.replay_10, color: Palette.dark),
+              ),
+              const SizedBox(width: 6),
+              IconButton.filled(
+                style: IconButton.styleFrom(backgroundColor: Palette.navy),
+                tooltip: value.isPlaying ? 'Pause' : 'Play',
+                onPressed: () =>
+                    value.isPlaying ? video.pause() : video.play(),
+                icon: Icon(
+                  value.isPlaying ? Icons.pause : Icons.play_arrow,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: 'Forward 10 seconds',
+                onPressed: () => video.seekTo(
+                    position + const Duration(seconds: 10)),
+                icon: const Icon(Icons.forward_10, color: Palette.dark),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "Ask about this lecture" — an AI assistant grounded in the lecture's
+/// transcript; answers arrive in the student's language.
+class _LectureChat extends StatefulWidget {
+  final List<LiveCaption> captions;
+  final String languageCode;
+  final String title;
+
+  const _LectureChat({
+    required this.captions,
+    required this.languageCode,
+    required this.title,
+  });
+
+  @override
+  State<_LectureChat> createState() => _LectureChatState();
+}
+
+class _LectureChatState extends State<_LectureChat> {
+  final _input = TextEditingController();
+  final _scroll = ScrollController();
+  final List<({bool me, String text})> _messages = [];
+  bool _thinking = false;
+
+  @override
+  void dispose() {
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final question = _input.text.trim();
+    if (question.isEmpty || _thinking) return;
+    _input.clear();
+    setState(() {
+      _messages.add((me: true, text: question));
+      _thinking = true;
+    });
+    try {
+      final transcript =
+          widget.captions.map((c) => c.text).join(' ');
+      final answer = await SlideAi.askLecture(
+        transcript: transcript.isEmpty ? widget.title : transcript,
+        question: question,
+        target: languageByCode(widget.languageCode),
+      );
+      if (mounted) setState(() => _messages.add((me: false, text: answer)));
+    } catch (e) {
+      if (mounted) {
+        setState(() => _messages.add(
+            (me: false, text: e.toString().replaceFirst('Exception: ', ''))));
+      }
+    } finally {
+      if (mounted) setState(() => _thinking = false);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) {
+          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Palette.line)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome,
+                    size: 16, color: Palette.marigold),
+                const SizedBox(width: 8),
+                Text('Ask about this lecture',
+                    style: text.titleMedium?.copyWith(fontSize: 13.5)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _messages.isEmpty
+                ? Center(
+                    child: Text(
+                      'Ask anything — answers come from this lecture\'s audio.',
+                      style: text.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : ListView(
+                    controller: _scroll,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    children: [
+                      for (final m in _messages)
+                        Align(
+                          alignment: m.me
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            constraints: const BoxConstraints(maxWidth: 420),
+                            decoration: BoxDecoration(
+                              color: m.me ? Palette.navy : Palette.paper,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              m.text,
+                              style: TextStyle(
+                                color: m.me ? Colors.white : Palette.dark,
+                                fontSize: 13.5,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (_thinking)
+                        const Padding(
+                          padding: EdgeInsets.all(8),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Palette.faint),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _input,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _send(),
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. What did sir say about recursion?',
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    style:
+                        IconButton.styleFrom(backgroundColor: Palette.dark),
+                    onPressed: _thinking ? null : _send,
+                    icon: const Icon(Icons.arrow_upward,
+                        color: Colors.white, size: 20),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

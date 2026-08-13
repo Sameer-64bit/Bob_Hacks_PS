@@ -43,6 +43,31 @@ extension RepositoryV4 on Repository {
         .map((rows) => rows.isEmpty ? null : ClassNotes.fromMap(rows.first));
   }
 
+  /// The latest notes row for one session, if any — so a lecture video
+  /// UPDATES the class's existing notes instead of adding a duplicate.
+  Future<String?> latestNoteIdForSession(String sessionId) async {
+    final row = await _db
+        .from('class_notes')
+        .select('id')
+        .eq('session_id', sessionId)
+        .order('created_at', ascending: false)
+        .limit(1)
+        .maybeSingle();
+    return row?['id'] as String?;
+  }
+
+  /// Puts an existing notes row back into the processing state (stale
+  /// translations are dropped — the content is about to change).
+  Future<void> resetClassNotes(String noteId) async {
+    await _db.from('class_notes').update({
+      'status': 'processing',
+      'progress': 0,
+      'stage': 'Updating notes from the lecture video…',
+      'error': null,
+      'translations': {},
+    }).eq('id', noteId);
+  }
+
   /// Stores a translation so the notes never need translating twice.
   Future<void> saveNotesTranslation(
       String noteId, String languageCode, Map<String, dynamic> notesJson) async {

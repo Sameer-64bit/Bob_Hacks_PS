@@ -155,49 +155,95 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
       }
 
       setState(() => _uploading = true);
-      final mediaId = await repo.uploadClassMedia(
-        classroomId: classroom.id,
-        teacherId: widget.teacher.id,
-        title: file.name,
-        mime: mime,
-        bytes: bytes,
-        sessionId: session?.id,
-        transcriptStatus: session != null ? 'processing' : 'none',
-      );
 
-      if (session != null) {
-        // Render the session's slides and hand everything to the proxy.
-        final noteId = await repo.createClassNotes(
+      // Visible progress the whole way — encrypting a big video takes a
+      // few seconds and used to look like a hang.
+      final stage = ValueNotifier<String>('Compressing & encrypting…');
+      if (mounted) {
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            content: ValueListenableBuilder<String>(
+              valueListenable: stage,
+              builder: (_, value, __) => Row(
+                children: [
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2.5, color: Palette.navy),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(child: Text(value)),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
+      try {
+        final mediaId = await repo.uploadClassMedia(
           classroomId: classroom.id,
-          language: 'en',
-          sessionId: session.id,
+          teacherId: widget.teacher.id,
+          title: file.name,
+          mime: mime,
+          bytes: bytes,
+          sessionId: session?.id,
+          transcriptStatus: session != null ? 'processing' : 'none',
         );
-        final slides = await repo.loadSessionSlides(session.id);
-        final pngs = <String>[];
-        final strokeCounts = <int>[];
-        for (final slide in slides) {
-          pngs.add(await SlideAi.renderSlideBase64(slide));
-          strokeCounts
-              .add(slide.backgroundUrl != null ? 999 : slide.strokes.length);
+
+        if (session != null) {
+          // A lecture video UPDATES the notes that End class already made
+          // for this session (or creates them if the class had none).
+          stage.value = 'Preparing the class notes update…';
+          var noteId = await repo.latestNoteIdForSession(session.id);
+          if (noteId != null) {
+            await repo.resetClassNotes(noteId);
+          } else {
+            noteId = await repo.createClassNotes(
+              classroomId: classroom.id,
+              language: 'en',
+              sessionId: session.id,
+            );
+          }
+
+          stage.value = 'Rendering the session slides…';
+          final slides = await repo.loadSessionSlides(session.id);
+          final pngs = <String>[];
+          final strokeCounts = <int>[];
+          for (final slide in slides) {
+            pngs.add(await SlideAi.renderSlideBase64(slide));
+            strokeCounts
+                .add(slide.backgroundUrl != null ? 999 : slide.strokes.length);
+          }
+
+          stage.value = 'Sending the lecture to the AI server…';
+          await repo.startLectureMediaJob(
+            mediaId: mediaId,
+            noteId: noteId,
+            language: 'en',
+            title: 'Class notes · ${branchByKey(classroom.branch).short} · '
+                '${shortWhen(session.startedAt)}',
+            mediaBytes: bytes,
+            mediaExt: file.extension?.toLowerCase() ?? 'mp4',
+            slidePngsB64: pngs,
+            strokeCounts: strokeCounts,
+            slideMarks: session.slideMarks,
+          );
         }
-        await repo.startLectureMediaJob(
-          mediaId: mediaId,
-          noteId: noteId,
-          language: 'en',
-          title: 'Class notes · ${branchByKey(classroom.branch).short} · '
-              '${shortWhen(session.startedAt)}',
-          mediaBytes: bytes,
-          mediaExt: file.extension?.toLowerCase() ?? 'mp4',
-          slidePngsB64: pngs,
-          strokeCounts: strokeCounts,
-          slideMarks: session.slideMarks,
-        );
+      } finally {
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
       }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(session != null
-                ? 'Lecture uploaded 🔒 — subtitles and class notes are being prepared.'
+                ? 'Lecture uploaded 🔒 — subtitles are being prepared and the '
+                    'class notes are updating.'
                 : 'Uploaded — compressed & encrypted, in-app only. 🔒')));
       }
       await _load();

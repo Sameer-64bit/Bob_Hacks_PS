@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:encrypt/encrypt.dart' as enc;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -10,6 +11,12 @@ import '../models/models3.dart';
 import 'ai.dart';
 import 'repository.dart';
 import 'repository2.dart';
+
+/// Isolate entry: gzip+AES of a large file must not freeze the UI.
+Map<String, dynamic> packMediaInIsolate(Uint8List bytes) {
+  final packed = MediaCodec.pack(bytes);
+  return {'cipher': packed.cipher, 'iv': packed.ivHex};
+}
 
 /// Compression + encryption for class media. Static so it's unit-testable
 /// without a Supabase connection.
@@ -101,8 +108,11 @@ extension RepositoryV7 on Repository {
     String? sessionId,
     String transcriptStatus = 'none',
   }) async {
-    final packed = MediaCodec.pack(bytes);
-    final cipher = packed.cipher;
+    // Off the UI thread — a 50 MB gzip+AES pass would otherwise freeze the
+    // app and look like a hang.
+    final packed = await compute(packMediaInIsolate, bytes);
+    final cipher = packed['cipher'] as Uint8List;
+    final ivHex = packed['iv'] as String;
 
     final path = await uploadMedia(
       bytes: cipher,
@@ -121,7 +131,7 @@ extension RepositoryV7 on Repository {
           'bytes_original': bytes.length,
           'bytes_stored': cipher.length,
           'path': path,
-          'iv': packed.ivHex,
+          'iv': ivHex,
         })
         .select('id')
         .single();

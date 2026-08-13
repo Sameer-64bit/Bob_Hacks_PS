@@ -205,8 +205,10 @@ MIN_STROKES_FOR_VLM = 3
 SLIDE_PROMPT = (
     "This image is a digital whiteboard from a class: handwriting and line "
     "drawings on a plain white background. There are no photos, objects, "
-    "plants or people in it. Transcribe the text that is actually written "
-    "and briefly describe any diagram, in 2-3 sentences of class notes. "
+    "plants or people in it. Write detailed class notes for this slide: "
+    "transcribe every piece of text that is actually written, explain what "
+    "any diagram shows step by step, and expand the ideas into 5-8 full "
+    "sentences a student could revise from. "
     "If the strokes are too unclear to read, reply exactly: Unclear sketch."
 )
 
@@ -224,7 +226,7 @@ def _transcribe(req: EndClassRequest):
     with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
         f.write(audio_bytes)
         path = f.name
-    segments, info = get_whisper().transcribe(path, vad_filter=True)
+    segments, info = get_whisper().transcribe(path, vad_filter=True, task="translate")
     out = [
         {"start": float(s.start), "end": float(s.end), "text": s.text}
         for s in segments
@@ -251,7 +253,7 @@ def _generate_notes(note_id, title, language, slides, stroke_counts, slide_marks
             continue
         try:
             image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-            text = run_vlm(SLIDE_PROMPT, image, max_new_tokens=180)
+            text = run_vlm(SLIDE_PROMPT, image, max_new_tokens=420)
             if "unclear sketch" in text.lower():
                 text = ""
         except Exception as e:  # noqa: BLE001
@@ -348,7 +350,7 @@ def _process_live_chunk(req: LiveChunkRequest):
         with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
             f.write(audio)
             path = f.name
-        segments, _info = get_whisper().transcribe(path, vad_filter=True)
+        segments, _info = get_whisper().transcribe(path, vad_filter=True, task="translate")
         rows = []
         for s in segments:
             text = s.text.strip()
@@ -471,7 +473,7 @@ def _process_lecture_media(req: LectureMediaRequest):
         with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
             f.write(audio)
             path = f.name
-        raw, info = get_whisper().transcribe(path, vad_filter=True)
+        raw, info = get_whisper().transcribe(path, vad_filter=True, task="translate")
         segments = [
             {"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
             for s in raw

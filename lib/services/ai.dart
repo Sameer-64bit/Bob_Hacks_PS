@@ -107,6 +107,45 @@ class SlideAi {
     return text;
   }
 
+  /// Lecture Q&A: answers a student's question grounded in the lecture
+  /// transcript (and notes context), then translated to their language.
+  static Future<String> askLecture({
+    required String transcript,
+    required String question,
+    required AppLanguage target,
+  }) async {
+    final context = transcript.length > 4000
+        ? transcript.substring(transcript.length - 4000)
+        : transcript;
+    final body = jsonEncode({
+      'prompt': 'You are a helpful teaching assistant. Below is the '
+          'transcript of a class lecture. Answer the student\'s question '
+          'using ONLY this lecture. If the lecture does not cover it, say '
+          'so briefly.\n\nLECTURE:\n$context\n\nQUESTION: $question\n\n'
+          'Answer in 2-5 sentences of plain English.',
+    });
+    http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse('${await _serverUrl()}/generate'),
+            headers: {'content-type': 'application/json'},
+            body: body,
+          )
+          .timeout(const Duration(seconds: 90));
+    } catch (_) {
+      _cachedUrl = null;
+      throw Exception('Could not reach the AI server.');
+    }
+    if (response.statusCode != 200) {
+      throw Exception('AI server error (${response.statusCode}).');
+    }
+    final answer =
+        ((jsonDecode(response.body) as Map)['text'] as String? ?? '').trim();
+    if (answer.isEmpty) throw Exception('No answer — try rephrasing.');
+    return Translator.translate(answer, target.code);
+  }
+
   /// Reads the slide with the VLM, then translates the transcription into
   /// the student's language with the free translator.
   static Future<String> translate(BoardSlide slide, AppLanguage target) async {

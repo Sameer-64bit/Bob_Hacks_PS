@@ -192,15 +192,18 @@ class _SessionBoardViewerState extends State<SessionBoardViewer> {
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Center(
-                          child: AspectRatio(
-                            aspectRatio: kCanvasSize.aspectRatio,
-                            child: FittedBox(
-                              fit: BoxFit.contain,
-                              child: SizedBox(
-                                width: kCanvasSize.width,
-                                height: kCanvasSize.height,
-                                child: SlideView(slide: _slides[_current]),
+                        child: InteractiveViewer(
+                          maxScale: 8,
+                          child: Center(
+                            child: AspectRatio(
+                              aspectRatio: kCanvasSize.aspectRatio,
+                              child: FittedBox(
+                                fit: BoxFit.contain,
+                                child: SizedBox(
+                                  width: kCanvasSize.width,
+                                  height: kCanvasSize.height,
+                                  child: SlideView(slide: _slides[_current]),
+                                ),
                               ),
                             ),
                           ),

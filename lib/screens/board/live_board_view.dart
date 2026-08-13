@@ -195,25 +195,30 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: kCanvasSize.aspectRatio,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.4),
-                                blurRadius: 30,
-                                offset: const Offset(0, 10),
+                    // Pinch / scroll / double-tap-drag to zoom into the
+                    // teacher's writing.
+                    child: InteractiveViewer(
+                      maxScale: 8,
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: kCanvasSize.aspectRatio,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.4),
+                                  blurRadius: 30,
+                                  offset: const Offset(0, 10),
+                                ),
+                              ],
+                            ),
+                            child: FittedBox(
+                              fit: BoxFit.contain,
+                              child: SizedBox(
+                                width: kCanvasSize.width,
+                                height: kCanvasSize.height,
+                                child: SlideView(slide: slide),
                               ),
-                            ],
-                          ),
-                          child: FittedBox(
-                            fit: BoxFit.contain,
-                            child: SizedBox(
-                              width: kCanvasSize.width,
-                              height: kCanvasSize.height,
-                              child: SlideView(slide: slide),
                             ),
                           ),
                         ),
