@@ -192,6 +192,7 @@ class EndClassRequest(BaseModel):
     slides: list[str] = []          # base64 PNGs, in order
     stroke_counts: list[int] = []   # strokes per slide — sparse slides skip the VLM
     slide_marks: list[dict] = []    # [{"index": int, "at": seconds}]
+    session_id: str | None = None   # live captions become the transcript
     audio_b64: str | None = None
     audio_url: str | None = None           # public URL (preferred for big files)
     audio_ext: str = "webm"
@@ -235,13 +236,22 @@ def _transcribe(req: EndClassRequest):
 def _process_class_notes(req: EndClassRequest):
     note = lambda p, s: supabase_update_note(req.note_id, {"progress": p, "stage": s})  # noqa: E731
     try:
-        # 1. Transcribe lecture audio (skipped cleanly when there is none).
-        note(5, "Transcribing the lecture…")
+        # 1. Get the transcript: live captions (already transcribed during
+        #    class) beat re-transcribing; else fall back to the audio file.
+        note(5, "Collecting the lecture transcript…")
         segments = []
-        try:
-            segments = _transcribe(req)
-        except Exception as e:  # noqa: BLE001 — notes still work without audio
-            logger.warning(f"Transcription failed, continuing with slides only: {e}")
+        if req.session_id:
+            try:
+                segments = _fetch_session_captions(req.session_id)
+                logger.info(f"Using {len(segments)} live captions as transcript")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Could not fetch live captions: {e}")
+        if not segments:
+            note(8, "Transcribing the lecture…")
+            try:
+                segments = _transcribe(req)
+            except Exception as e:  # noqa: BLE001 — notes still work without audio
+                logger.warning(f"Transcription failed, continuing with slides only: {e}")
 
         # 2. Read every slide with SmolVLM (the model is already in memory).
         #    Slides with almost no ink are skipped — asking a small VLM about
@@ -288,6 +298,89 @@ def _process_class_notes(req: EndClassRequest):
         supabase_update_note(
             req.note_id, {"status": "failed", "stage": "Failed", "error": str(e)[:500]}
         )
+
+
+# ---------------------------------------------------------------------------
+# Live transcription: the board posts ~15s audio chunks during the lecture;
+# each is whisper-transcribed and written to live_captions so students see
+# captions almost live (and end_class reuses them as the transcript).
+# ---------------------------------------------------------------------------
+
+class LiveChunkRequest(BaseModel):
+    session_id: str
+    classroom_id: str
+    slide_index: int = 0
+    chunk_index: int = 0
+    offset_s: float = 0.0          # seconds from lecture start
+    audio_b64: str
+    audio_ext: str = "webm"
+
+
+def _insert_captions(rows: list[dict]):
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/live_captions",
+        data=json.dumps(rows).encode(),
+        method="POST",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    urllib.request.urlopen(req, timeout=10).read()
+
+
+def _process_live_chunk(req: LiveChunkRequest):
+    try:
+        audio = base64.b64decode(req.audio_b64)
+        with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
+            f.write(audio)
+            path = f.name
+        segments, _info = get_whisper().transcribe(path, vad_filter=True)
+        rows = []
+        for s in segments:
+            text = s.text.strip()
+            if not text:
+                continue
+            rows.append(
+                {
+                    "session_id": req.session_id,
+                    "classroom_id": req.classroom_id,
+                    "slide_index": req.slide_index,
+                    "chunk_index": req.chunk_index,
+                    "start_s": req.offset_s + float(s.start),
+                    "end_s": req.offset_s + float(s.end),
+                    "text": text,
+                }
+            )
+        if rows:
+            _insert_captions(rows)
+            logger.info(f"Live chunk {req.chunk_index}: {len(rows)} captions")
+    except Exception as e:  # noqa: BLE001 — a bad chunk must not kill the class
+        logger.warning(f"Live chunk failed: {e}")
+
+
+@app.post("/live_chunk")
+def live_chunk(req: LiveChunkRequest):
+    threading.Thread(target=_process_live_chunk, args=(req,), daemon=True).start()
+    return {"ok": True}
+
+
+def _fetch_session_captions(session_id: str):
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/live_captions"
+        f"?session_id=eq.{session_id}&order=start_s.asc&select=start_s,end_s,text",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        rows = json.load(resp)
+    return [
+        {"start": r["start_s"], "end": r["end_s"], "text": r["text"]} for r in rows
+    ]
 
 
 @app.post("/end_class")

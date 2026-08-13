@@ -9,6 +9,8 @@ import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository4.dart';
+import '../../services/repository5.dart';
+import '../../services/translator.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import 'board_controller.dart';
@@ -41,6 +43,11 @@ class _LiveBoardViewState extends State<LiveBoardView> {
   bool _handCooldown = false;
   final _chat = TextEditingController();
   List<BoardSlide> _slides = [];
+
+  // Live captions ("view the lecture in my language")
+  bool _captionsOn = false;
+  bool _translateCaptions = true;
+  final Map<String, String> _captionCache = {};
 
   Future<void> _sharePdf() async {
     try {
@@ -184,7 +191,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
 
             return Column(
               children: [
-                _topBar(slide),
+                _topBar(slide, session: session),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
@@ -213,6 +220,16 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                       ),
                     ),
                   ),
+                ),
+                if (_captionsOn) _CaptionsPanel(
+                  sessionId: session.id,
+                  languageCode: _translateCaptions ? _language : 'en',
+                  cache: _captionCache,
+                  onToggleTranslate: _language == 'en'
+                      ? null
+                      : () => setState(
+                          () => _translateCaptions = !_translateCaptions),
+                  translating: _translateCaptions,
                 ),
                 _bottomBar(slides.length),
               ],
@@ -249,7 +266,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
     );
   }
 
-  Widget _topBar(BoardSlide? slide) {
+  Widget _topBar(BoardSlide? slide, {BoardSession? session}) {
     return Container(
       height: 56,
       decoration: const BoxDecoration(
@@ -303,6 +320,18 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                   color: Colors.white70, size: 20),
             ),
           ],
+          if (session != null)
+            IconButton(
+              tooltip: _captionsOn
+                  ? 'Hide live captions'
+                  : 'Live captions in ${languageByCode(_language).native}',
+              onPressed: () => setState(() => _captionsOn = !_captionsOn),
+              icon: Icon(
+                _captionsOn ? Icons.closed_caption : Icons.closed_caption_off,
+                color: _captionsOn ? Palette.marigold : Colors.white70,
+                size: 22,
+              ),
+            ),
           IconButton(
             tooltip: 'Past boards (by date)',
             onPressed: () => showBoardHistory(context, widget.classroom),
@@ -389,6 +418,167 @@ class _LiveBoardViewState extends State<LiveBoardView> {
             label: const Text('Raise hand'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Live captions strip: the teacher's words appear here seconds after they
+/// are spoken, translated into the student's language when enabled.
+class _CaptionsPanel extends StatelessWidget {
+  final String sessionId;
+  final String languageCode;
+  final Map<String, String> cache;
+  final VoidCallback? onToggleTranslate;
+  final bool translating;
+
+  const _CaptionsPanel({
+    required this.sessionId,
+    required this.languageCode,
+    required this.cache,
+    required this.onToggleTranslate,
+    required this.translating,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 132),
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        color: Color(0xFF171B21),
+        border: Border(top: BorderSide(color: _chromeLine)),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      child: StreamBuilder<List<LiveCaption>>(
+        stream: repo.streamCaptions(sessionId),
+        builder: (context, snapshot) {
+          final captions = snapshot.data ?? const <LiveCaption>[];
+          final latest = captions.length <= 4
+              ? captions
+              : captions.sublist(captions.length - 4);
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: latest.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Waiting for the teacher to speak…',
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 13),
+                        ),
+                      )
+                    : ListView(
+                        reverse: true,
+                        children: [
+                          for (final caption in latest.reversed)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: _CaptionLine(
+                                caption: caption,
+                                languageCode: languageCode,
+                                cache: cache,
+                                emphasized: caption == latest.last,
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
+              if (onToggleTranslate != null)
+                Tooltip(
+                  message: translating
+                      ? 'Showing translated captions'
+                      : 'Show original (English) captions',
+                  child: IconButton(
+                    onPressed: onToggleTranslate,
+                    icon: Icon(
+                      Icons.translate,
+                      size: 18,
+                      color:
+                          translating ? Palette.marigold : Colors.white38,
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CaptionLine extends StatefulWidget {
+  final LiveCaption caption;
+  final String languageCode;
+  final Map<String, String> cache;
+  final bool emphasized;
+
+  const _CaptionLine({
+    required this.caption,
+    required this.languageCode,
+    required this.cache,
+    required this.emphasized,
+  });
+
+  @override
+  State<_CaptionLine> createState() => _CaptionLineState();
+}
+
+class _CaptionLineState extends State<_CaptionLine> {
+  String? _translated;
+
+  String get _cacheKey => '${widget.caption.id}:${widget.languageCode}';
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CaptionLine old) {
+    super.didUpdateWidget(old);
+    if (old.languageCode != widget.languageCode) {
+      _translated = null;
+      _resolve();
+    }
+  }
+
+  Future<void> _resolve() async {
+    if (widget.languageCode == 'en') return;
+    final cached = widget.cache[_cacheKey];
+    if (cached != null) {
+      _translated = cached;
+      return;
+    }
+    try {
+      final t = await Translator.translate(
+          widget.caption.text, widget.languageCode);
+      widget.cache[_cacheKey] = t;
+      if (mounted) setState(() => _translated = t);
+    } catch (_) {
+      // keep the original text
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showOriginal = widget.languageCode == 'en';
+    final text = showOriginal
+        ? widget.caption.text
+        : (_translated ?? widget.cache[_cacheKey] ?? widget.caption.text);
+    return Text(
+      text,
+      style: TextStyle(
+        color: widget.emphasized
+            ? Colors.white
+            : Colors.white.withValues(alpha: 0.55),
+        fontSize: widget.emphasized ? 15 : 12.5,
+        height: 1.35,
+        fontWeight:
+            widget.emphasized ? FontWeight.w600 : FontWeight.w400,
       ),
     );
   }

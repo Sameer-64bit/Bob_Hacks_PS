@@ -85,6 +85,7 @@ extension RepositoryV4 on Repository {
     required List<String> slidePngsB64,
     required List<int> strokeCounts,
     required List<Map<String, dynamic>> slideMarks,
+    String? sessionId,
     String? audioUrl,
     String audioExt = 'webm',
   }) async {
@@ -100,6 +101,7 @@ extension RepositoryV4 on Repository {
             'slides': slidePngsB64,
             'stroke_counts': strokeCounts,
             'slide_marks': slideMarks,
+            'session_id': sessionId,
             'audio_url': audioUrl,
             'audio_ext': audioExt,
           }),

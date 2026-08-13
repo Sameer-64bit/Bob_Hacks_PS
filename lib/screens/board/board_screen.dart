@@ -18,6 +18,7 @@ import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository3.dart';
 import '../../services/repository4.dart';
+import '../../services/repository5.dart';
 import '../../theme.dart';
 import 'board_controller.dart';
 import 'board_history.dart';
@@ -73,13 +74,20 @@ class _BoardScreenState extends State<BoardScreen> {
   final Set<String> _seenEvents = {};
   final List<ClassEvent> _popups = [];
 
-  // Lecture recording + slide-change timestamps for the notes pipeline
+  // Lecture recording + slide-change timestamps for the notes pipeline.
+  // Audio is recorded in ~15s chunks: each chunk goes straight to the AI
+  // proxy for live captions, and the captions double as the transcript.
   final AudioRecorder _lectureRecorder = AudioRecorder();
   bool _lectureRecording = false;
   DateTime? _audioStart;
   final List<Map<String, dynamic>> _slideMarks = [];
   int _lastSlideIndex = 0;
   bool _endingClass = false;
+  Timer? _chunkTimer;
+  int _chunkIndex = 0;
+  double _chunkOffset = 0;
+
+  static const _chunkSeconds = 15;
 
   @override
   void initState() {
@@ -92,18 +100,53 @@ class _BoardScreenState extends State<BoardScreen> {
   void dispose() {
     _eventsSub?.cancel();
     _saveTimer?.cancel();
+    _chunkTimer?.cancel();
     _flushSaves();
     _lectureRecorder.dispose();
     _board?.dispose();
     super.dispose();
   }
 
+  Future<void> _startChunk() async {
+    await _lectureRecorder.start(
+      RecordConfig(encoder: kIsWeb ? AudioEncoder.opus : AudioEncoder.aacLc),
+      path: 'lecture-chunk-$_chunkIndex.m4a',
+    );
+  }
+
+  /// Closes the current audio chunk, ships it for live captioning and
+  /// immediately starts the next one.
+  Future<void> _rotateChunk({bool restart = true}) async {
+    final classroom = _classroom;
+    final session = _session;
+    final path = await _lectureRecorder.stop();
+    final offset = _chunkOffset;
+    _chunkOffset = DateTime.now()
+            .difference(_audioStart ?? DateTime.now())
+            .inMilliseconds /
+        1000.0;
+    if (restart) await _startChunk();
+    if (path == null || classroom == null || session == null) return;
+    try {
+      final bytes = await XFile(path).readAsBytes();
+      if (bytes.isEmpty) return;
+      await repo.sendLiveChunk(
+        sessionId: session.id,
+        classroomId: classroom.id,
+        slideIndex: _board?.current ?? 0,
+        chunkIndex: _chunkIndex++,
+        offsetSeconds: offset,
+        audioBytes: bytes,
+        audioExt: kIsWeb ? 'webm' : 'm4a',
+      );
+    } catch (_) {
+      // A dropped chunk only loses ~15s of captions — keep the class going.
+    }
+  }
+
   Future<void> _toggleLectureRecording() async {
     try {
-      if (_lectureRecording) {
-        // Stop only pauses conceptually — bytes are collected in _endClass.
-        return;
-      }
+      if (_lectureRecording) return; // stops when the class ends
       if (!await _lectureRecorder.hasPermission()) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -111,11 +154,11 @@ class _BoardScreenState extends State<BoardScreen> {
         }
         return;
       }
-      await _lectureRecorder.start(
-        RecordConfig(
-            encoder: kIsWeb ? AudioEncoder.opus : AudioEncoder.aacLc),
-        path: 'lecture.m4a',
-      );
+      _chunkIndex = 0;
+      _chunkOffset = 0;
+      await _startChunk();
+      _chunkTimer = Timer.periodic(
+          const Duration(seconds: _chunkSeconds), (_) => _rotateChunk());
       setState(() {
         _lectureRecording = true;
         _audioStart = DateTime.now();
@@ -126,7 +169,8 @@ class _BoardScreenState extends State<BoardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text(
-                '🎙️ Recording the lecture — it becomes class notes when you end the class.')));
+                '🎙️ Recording — students can follow live captions, and the '
+                'lecture becomes class notes when you end the class.')));
       }
     } catch (e) {
       if (mounted) {
@@ -439,16 +483,12 @@ class _BoardScreenState extends State<BoardScreen> {
     try {
       await _flushSaves();
 
-      // 1. Collect the lecture audio, if the teacher recorded one.
-      String? audioUrl;
+      // 1. Close the last audio chunk — the live captions already hold the
+      //    whole transcript, so nothing big needs uploading here.
       if (_lectureRecording) {
-        final path = await _lectureRecorder.stop();
+        _chunkTimer?.cancel();
+        await _rotateChunk(restart: false);
         _lectureRecording = false;
-        if (path != null) {
-          final bytes = await XFile(path).readAsBytes();
-          audioUrl = await repo.uploadLectureAudio(
-              bytes, kIsWeb ? 'webm' : 'm4a');
-        }
       }
 
       // 2. Create the notes row students will watch, then render the slides.
@@ -475,8 +515,7 @@ class _BoardScreenState extends State<BoardScreen> {
         slidePngsB64: slides,
         strokeCounts: strokeCounts,
         slideMarks: _slideMarks,
-        audioUrl: audioUrl,
-        audioExt: kIsWeb ? 'webm' : 'm4a',
+        sessionId: _session?.id,
       );
 
       // 4. Close this session — its board stays in history under today's date.

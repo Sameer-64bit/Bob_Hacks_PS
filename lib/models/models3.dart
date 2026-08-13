@@ -45,6 +45,74 @@ class ConceptNote {
       );
 }
 
+/// One live-transcribed caption line from the lecture.
+class LiveCaption {
+  final String id;
+  final int slideIndex;
+  final double startS;
+  final double endS;
+  final String text;
+
+  const LiveCaption({
+    required this.id,
+    required this.slideIndex,
+    required this.startS,
+    required this.endS,
+    required this.text,
+  });
+
+  factory LiveCaption.fromMap(Map<String, dynamic> m) => LiveCaption(
+        id: m['id'] as String,
+        slideIndex: (m['slide_index'] as num?)?.toInt() ?? 0,
+        startS: (m['start_s'] as num?)?.toDouble() ?? 0,
+        endS: (m['end_s'] as num?)?.toDouble() ?? 0,
+        text: m['text'] as String? ?? '',
+      );
+}
+
+/// Teacher-uploaded media: stored compressed + encrypted, decrypted only
+/// inside the app.
+class ClassMedia {
+  final String id;
+  final String classroomId;
+  final String title;
+  final String mime;
+  final int bytesOriginal;
+  final int bytesStored;
+  final String path;
+  final String iv;
+  final DateTime createdAt;
+
+  const ClassMedia({
+    required this.id,
+    required this.classroomId,
+    required this.title,
+    required this.mime,
+    required this.bytesOriginal,
+    required this.bytesStored,
+    required this.path,
+    required this.iv,
+    required this.createdAt,
+  });
+
+  bool get isVideo => mime.startsWith('video/');
+  bool get isAudio => mime.startsWith('audio/');
+  bool get isImage => mime.startsWith('image/');
+  bool get isPdf => mime == 'application/pdf';
+
+  factory ClassMedia.fromMap(Map<String, dynamic> m) => ClassMedia(
+        id: m['id'] as String,
+        classroomId: m['classroom_id'] as String,
+        title: m['title'] as String? ?? 'Untitled',
+        mime: m['mime'] as String? ?? 'application/octet-stream',
+        bytesOriginal: (m['bytes_original'] as num?)?.toInt() ?? 0,
+        bytesStored: (m['bytes_stored'] as num?)?.toInt() ?? 0,
+        path: m['path'] as String,
+        iv: m['iv'] as String,
+        createdAt: DateTime.parse(m['created_at'] as String).toLocal(),
+      );
+}
+
 /// One whiteboard session — a single teaching period's board, tied to
 /// its date and time. A classroom accumulates many of these.
 class BoardSession {

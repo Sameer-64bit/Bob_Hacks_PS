@@ -14,6 +14,7 @@ import '../landing.dart';
 import 'assignments_tab.dart';
 import 'attendance_tab.dart';
 import 'doubts_tab.dart';
+import 'media_tab.dart';
 
 class TeacherDashboard extends StatefulWidget {
   final Teacher teacher;
@@ -158,6 +159,8 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               icon: Icon(Icons.forum_outlined), label: 'Doubts'),
           NavigationDestination(
               icon: Icon(Icons.fact_check_outlined), label: 'Attendance'),
+          NavigationDestination(
+              icon: Icon(Icons.perm_media_outlined), label: 'Media'),
         ],
       ),
       floatingActionButton: _tab == 0
@@ -182,6 +185,10 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
                   classrooms: classrooms),
               3 => TeacherAttendanceTab(
                   key: ValueKey('attendance-${classrooms.length}'),
+                  classrooms: classrooms),
+              4 => TeacherMediaTab(
+                  key: ValueKey('media-${classrooms.length}'),
+                  teacher: widget.teacher,
                   classrooms: classrooms),
               _ => _buildScheduleTab(classrooms),
             },

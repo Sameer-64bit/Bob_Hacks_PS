@@ -10,12 +10,14 @@ import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository3.dart';
 import '../../services/repository4.dart';
+import '../../services/repository5.dart';
 import '../../services/session.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/language_picker.dart';
 import '../board/live_board_view.dart';
 import '../landing.dart';
+import '../shared/media_viewer.dart';
 import 'assignments_tab.dart';
 import 'doubts_tab.dart';
 import 'notes_screen.dart';
@@ -362,14 +364,68 @@ class _StudentDashboardState extends State<StudentDashboard> {
               ],
             ),
             const SizedBox(height: 20),
-            if (_classroom != null)
+            if (_classroom != null) ...[
               ClassNotesSection(
                 classroom: _classroom!,
                 languageCode: _language,
               ),
+              const SizedBox(height: 8),
+              ClassMediaSection(classroom: _classroom!),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Teacher-shared media for this classroom — opens in the encrypted
+/// in-app viewer.
+class ClassMediaSection extends StatelessWidget {
+  final Classroom classroom;
+  const ClassMediaSection({super.key, required this.classroom});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return FutureBuilder<List<ClassMedia>>(
+      future: repo.listClassMedia(classroom.id),
+      builder: (context, snapshot) {
+        final media = snapshot.data ?? const <ClassMedia>[];
+        if (media.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionTitle('Class media'),
+            const SizedBox(height: 8),
+            for (final m in media.take(4))
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                leading: Icon(
+                  m.isVideo
+                      ? Icons.movie_outlined
+                      : m.isAudio
+                          ? Icons.audiotrack_outlined
+                          : m.isPdf
+                              ? Icons.picture_as_pdf_outlined
+                              : Icons.image_outlined,
+                  color: Palette.slate,
+                ),
+                title: Text(m.title,
+                    style: text.titleMedium?.copyWith(fontSize: 13.5),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                subtitle: Text('🔒 in-app only · ${shortWhen(m.createdAt)}',
+                    style: text.bodySmall),
+                trailing: const Icon(Icons.chevron_right,
+                    size: 18, color: Palette.faint),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => MediaViewerScreen(media: m))),
+              ),
+          ],
+        );
+      },
     );
   }
 }
