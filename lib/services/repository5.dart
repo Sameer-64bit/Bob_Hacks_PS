@@ -91,12 +91,15 @@ extension RepositoryV7 on Repository {
   // ------------------------------------------------------- encrypted media
 
   /// Compress (gzip) + encrypt (AES-CTR) + upload, then record metadata.
-  Future<void> uploadClassMedia({
+  /// Returns the new media row's id.
+  Future<String> uploadClassMedia({
     required String classroomId,
     required String teacherId,
     required String title,
     required String mime,
     required Uint8List bytes,
+    String? sessionId,
+    String transcriptStatus = 'none',
   }) async {
     final packed = MediaCodec.pack(bytes);
     final cipher = packed.cipher;
@@ -106,16 +109,80 @@ extension RepositoryV7 on Repository {
       extension: 'bin',
       contentType: 'application/octet-stream',
     );
-    await _db.from('class_media').insert({
-      'classroom_id': classroomId,
-      'teacher_id': teacherId,
-      'title': title,
-      'mime': mime,
-      'bytes_original': bytes.length,
-      'bytes_stored': cipher.length,
-      'path': path,
-      'iv': packed.ivHex,
-    });
+    final row = await _db
+        .from('class_media')
+        .insert({
+          'classroom_id': classroomId,
+          'teacher_id': teacherId,
+          if (sessionId != null) 'session_id': sessionId,
+          'transcript_status': transcriptStatus,
+          'title': title,
+          'mime': mime,
+          'bytes_original': bytes.length,
+          'bytes_stored': cipher.length,
+          'path': path,
+          'iv': packed.ivHex,
+        })
+        .select('id')
+        .single();
+    return row['id'] as String;
+  }
+
+  /// Subtitles for an uploaded lecture, ordered by playback time.
+  Future<List<LiveCaption>> listMediaCaptions(String mediaId) async {
+    final rows = await _db
+        .from('media_captions')
+        .select()
+        .eq('media_id', mediaId)
+        .order('start_s');
+    return [
+      for (final r in rows)
+        LiveCaption(
+          id: r['id'] as String,
+          slideIndex: 0,
+          startS: (r['start_s'] as num?)?.toDouble() ?? 0,
+          endS: (r['end_s'] as num?)?.toDouble() ?? 0,
+          text: r['text'] as String? ?? '',
+        ),
+    ];
+  }
+
+  /// Ships the raw lecture recording to the proxy: it transcribes once
+  /// (player subtitles) and, when [noteId] is set, synthesises the class
+  /// notes from that transcript + the session slides.
+  Future<void> startLectureMediaJob({
+    required String mediaId,
+    String? noteId,
+    required String language,
+    required String title,
+    required Uint8List mediaBytes,
+    required String mediaExt,
+    List<String> slidePngsB64 = const [],
+    List<int> strokeCounts = const [],
+    List<Map<String, dynamic>> slideMarks = const [],
+  }) async {
+    final server = await SlideAi.resolveServerUrl();
+    final response = await http
+        .post(
+          Uri.parse('$server/lecture_media'),
+          headers: {'content-type': 'application/json'},
+          body: jsonEncode({
+            'media_id': mediaId,
+            'note_id': noteId,
+            'language': language,
+            'title': title,
+            'audio_b64': base64Encode(mediaBytes),
+            'audio_ext': mediaExt,
+            'slides': slidePngsB64,
+            'stroke_counts': strokeCounts,
+            'slide_marks': slideMarks,
+          }),
+        )
+        .timeout(const Duration(minutes: 3));
+    if (response.statusCode != 200) {
+      throw Exception(
+          'AI server rejected the lecture (HTTP ${response.statusCode}).');
+    }
   }
 
   Future<List<ClassMedia>> listClassMedia(String classroomId) async {

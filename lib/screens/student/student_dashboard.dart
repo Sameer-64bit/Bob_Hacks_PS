@@ -370,7 +370,8 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 languageCode: _language,
               ),
               const SizedBox(height: 8),
-              ClassMediaSection(classroom: _classroom!),
+              ClassMediaSection(
+                  classroom: _classroom!, languageCode: _language),
             ],
           ],
         ),
@@ -380,10 +381,12 @@ class _StudentDashboardState extends State<StudentDashboard> {
 }
 
 /// Teacher-shared media for this classroom — opens in the encrypted
-/// in-app viewer.
+/// in-app viewer, with lecture subtitles in [languageCode].
 class ClassMediaSection extends StatelessWidget {
   final Classroom classroom;
-  const ClassMediaSection({super.key, required this.classroom});
+  final String languageCode;
+  const ClassMediaSection(
+      {super.key, required this.classroom, this.languageCode = 'en'});
 
   @override
   Widget build(BuildContext context) {
@@ -416,12 +419,16 @@ class ClassMediaSection extends StatelessWidget {
                     style: text.titleMedium?.copyWith(fontSize: 13.5),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis),
-                subtitle: Text('🔒 in-app only · ${shortWhen(m.createdAt)}',
+                subtitle: Text(
+                    '🔒 in-app only'
+                    '${m.sessionId != null ? ' · lecture 🎬 subtitles' : ''}'
+                    ' · ${shortWhen(m.createdAt)}',
                     style: text.bodySmall),
                 trailing: const Icon(Icons.chevron_right,
                     size: 18, color: Palette.faint),
                 onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => MediaViewerScreen(media: m))),
+                    builder: (_) => MediaViewerScreen(
+                        media: m, languageCode: languageCode))),
               ),
           ],
         );

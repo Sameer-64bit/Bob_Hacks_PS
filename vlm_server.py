@@ -233,11 +233,58 @@ def _transcribe(req: EndClassRequest):
     return out
 
 
+def _generate_notes(note_id, title, language, slides, stroke_counts, slide_marks, segments):
+    """Slides + transcript segments -> finished notes row. Shared by the
+    end-class flow and the lecture-video flow."""
+    note = lambda p, s: supabase_update_note(note_id, {"progress": p, "stage": s})  # noqa: E731
+
+    # Read every slide with SmolVLM (the model is already in memory).
+    # Slides with almost no ink are skipped — asking a small VLM about
+    # three stray lines is where the hallucinations came from.
+    slide_summaries = []
+    total = max(len(slides), 1)
+    for i, b64 in enumerate(slides):
+        note(20 + int(55 * i / total), f"Reading slide {i + 1} of {total}…")
+        strokes = stroke_counts[i] if i < len(stroke_counts) else None
+        if strokes is not None and strokes < MIN_STROKES_FOR_VLM:
+            slide_summaries.append("")
+            continue
+        try:
+            image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+            text = run_vlm(SLIDE_PROMPT, image, max_new_tokens=180)
+            if "unclear sketch" in text.lower():
+                text = ""
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Slide {i} failed: {e}")
+            text = ""
+        slide_summaries.append(text)
+
+    # Align transcript to slides + compose the notes JSON.
+    note(80, "Writing the notes…")
+    per_slide, unassigned = align_segments(segments, slide_marks, len(slides))
+    notes = compose_notes(title, slide_summaries, per_slide, unassigned, language)
+
+    # Optional Gemini polish (Content_Generation's schema), time-boxed.
+    if GEMINI_API_KEY:
+        note(88, "Polishing with Gemini…")
+        notes = gemini_enhance(notes, GEMINI_API_KEY)
+
+    # Free Wikipedia illustrations for the key concepts.
+    note(94, "Adding illustrations…")
+    notes = wiki_enrich(notes)
+
+    supabase_update_note(
+        note_id,
+        {"status": "ready", "progress": 100, "stage": "Ready", "notes": notes},
+    )
+    logger.success(f"Notes ready for {note_id}")
+
+
 def _process_class_notes(req: EndClassRequest):
     note = lambda p, s: supabase_update_note(req.note_id, {"progress": p, "stage": s})  # noqa: E731
     try:
-        # 1. Get the transcript: live captions (already transcribed during
-        #    class) beat re-transcribing; else fall back to the audio file.
+        # Get the transcript: live captions (already transcribed during
+        # class) beat re-transcribing; else fall back to the audio file.
         note(5, "Collecting the lecture transcript…")
         segments = []
         if req.session_id:
@@ -253,46 +300,10 @@ def _process_class_notes(req: EndClassRequest):
             except Exception as e:  # noqa: BLE001 — notes still work without audio
                 logger.warning(f"Transcription failed, continuing with slides only: {e}")
 
-        # 2. Read every slide with SmolVLM (the model is already in memory).
-        #    Slides with almost no ink are skipped — asking a small VLM about
-        #    three stray lines is where the hallucinations came from.
-        slide_summaries = []
-        total = max(len(req.slides), 1)
-        for i, b64 in enumerate(req.slides):
-            note(20 + int(55 * i / total), f"Reading slide {i + 1} of {total}…")
-            strokes = req.stroke_counts[i] if i < len(req.stroke_counts) else None
-            if strokes is not None and strokes < MIN_STROKES_FOR_VLM:
-                slide_summaries.append("")
-                continue
-            try:
-                image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-                text = run_vlm(SLIDE_PROMPT, image, max_new_tokens=180)
-                if "unclear sketch" in text.lower():
-                    text = ""
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Slide {i} failed: {e}")
-                text = ""
-            slide_summaries.append(text)
-
-        # 3. Align transcript to slides + compose the notes JSON.
-        note(80, "Writing the notes…")
-        per_slide, unassigned = align_segments(segments, req.slide_marks, len(req.slides))
-        notes = compose_notes(req.title, slide_summaries, per_slide, unassigned, req.language)
-
-        # 4. Optional Gemini polish (Content_Generation's schema), time-boxed.
-        if GEMINI_API_KEY:
-            note(88, "Polishing with Gemini…")
-            notes = gemini_enhance(notes, GEMINI_API_KEY)
-
-        # 5. Free Wikipedia illustrations for the key concepts.
-        note(94, "Adding illustrations…")
-        notes = wiki_enrich(notes)
-
-        supabase_update_note(
-            req.note_id,
-            {"status": "ready", "progress": 100, "stage": "Ready", "notes": notes},
+        _generate_notes(
+            req.note_id, req.title, req.language, req.slides,
+            req.stroke_counts, req.slide_marks, segments,
         )
-        logger.success(f"Notes ready for {req.note_id}")
     except Exception as e:  # noqa: BLE001
         logger.exception("Class notes pipeline failed")
         supabase_update_note(
@@ -381,6 +392,118 @@ def _fetch_session_captions(session_id: str):
     return [
         {"start": r["start_s"], "end": r["end_s"], "text": r["text"]} for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Lecture video flow: the teacher uploads the class recording AFTER class.
+# Its audio is the canonical source — transcribed ONCE into media_captions
+# (player subtitles, translated per-student in the app) and then combined
+# with the session slides to synthesise the class notes.
+# ---------------------------------------------------------------------------
+
+class LectureMediaRequest(BaseModel):
+    media_id: str
+    note_id: str | None = None
+    language: str = "en"
+    title: str = "Class notes"
+    audio_b64: str                  # the raw (unencrypted) video/audio bytes
+    audio_ext: str = "mp4"
+    slides: list[str] = []
+    stroke_counts: list[int] = []
+    slide_marks: list[dict] = []
+
+
+def _set_media_status(media_id: str, status: str):
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/class_media?id=eq.{media_id}",
+        data=json.dumps({"transcript_status": status}).encode(),
+        method="PATCH",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not update media status: {e}")
+
+
+def _insert_media_captions(media_id: str, segments: list[dict]):
+    rows = [
+        {
+            "media_id": media_id,
+            "start_s": s["start"],
+            "end_s": s["end"],
+            "text": s["text"],
+        }
+        for s in segments
+        if s.get("text", "").strip()
+    ]
+    if not rows:
+        return
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/media_captions",
+        data=json.dumps(rows).encode(),
+        method="POST",
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    urllib.request.urlopen(req, timeout=15).read()
+
+
+def _process_lecture_media(req: LectureMediaRequest):
+    try:
+        _set_media_status(req.media_id, "processing")
+        if req.note_id:
+            supabase_update_note(
+                req.note_id,
+                {"progress": 5, "stage": "Transcribing the lecture video…"},
+            )
+        # faster-whisper reads the audio track straight out of mp4/webm.
+        audio = base64.b64decode(req.audio_b64)
+        with tempfile.NamedTemporaryFile(suffix=f".{req.audio_ext}", delete=False) as f:
+            f.write(audio)
+            path = f.name
+        raw, info = get_whisper().transcribe(path, vad_filter=True)
+        segments = [
+            {"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
+            for s in raw
+        ]
+        logger.info(
+            f"Lecture video: {len(segments)} segments ({info.duration:.0f}s)")
+        _insert_media_captions(req.media_id, segments)
+        _set_media_status(req.media_id, "ready")
+
+        # Synthesise the class notes from this transcript + the slides.
+        if req.note_id:
+            _generate_notes(
+                req.note_id, req.title, req.language, req.slides,
+                req.stroke_counts, req.slide_marks, segments,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Lecture media pipeline failed")
+        _set_media_status(req.media_id, "failed")
+        if req.note_id:
+            supabase_update_note(
+                req.note_id,
+                {"status": "failed", "stage": "Failed", "error": str(e)[:500]},
+            )
+
+
+@app.post("/lecture_media")
+def lecture_media(req: LectureMediaRequest):
+    logger.info(
+        f"Lecture media: media={req.media_id} note={req.note_id} "
+        f"slides={len(req.slides)} bytes~{len(req.audio_b64) * 3 // 4}")
+    threading.Thread(target=_process_lecture_media, args=(req,), daemon=True).start()
+    return {"ok": True}
 
 
 @app.post("/end_class")

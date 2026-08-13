@@ -37,9 +37,12 @@ extension RepositoryV5 on Repository {
     return BoardSession.fromMap(created);
   }
 
-  Future<void> endSession(String sessionId) async {
-    await _db.from('board_sessions').update(
-        {'ended_at': DateTime.now().toUtc().toIso8601String()}).eq('id', sessionId);
+  Future<void> endSession(String sessionId,
+      {List<Map<String, dynamic>>? slideMarks}) async {
+    await _db.from('board_sessions').update({
+      'ended_at': DateTime.now().toUtc().toIso8601String(),
+      if (slideMarks != null) 'slide_marks': slideMarks,
+    }).eq('id', sessionId);
   }
 
   /// Every session of a classroom, newest first — the board history.

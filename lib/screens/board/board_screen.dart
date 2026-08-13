@@ -518,8 +518,12 @@ class _BoardScreenState extends State<BoardScreen> {
         sessionId: _session?.id,
       );
 
-      // 4. Close this session — its board stays in history under today's date.
-      if (_session != null) await repo.endSession(_session!.id);
+      // 4. Close this session — its board stays in history under today's
+      //    date, with the slide timestamps kept for a lecture video
+      //    uploaded later.
+      if (_session != null) {
+        await repo.endSession(_session!.id, slideMarks: _slideMarks);
+      }
 
       if (!mounted) return;
       await _offerNewBoard(classroom);

@@ -5,7 +5,10 @@ import '../../data/branches.dart';
 import '../../models/models.dart';
 import '../../models/models2.dart';
 import '../../models/models3.dart';
+import '../../services/ai.dart';
 import '../../services/repository.dart';
+import '../../services/repository3.dart';
+import '../../services/repository4.dart';
 import '../../services/repository5.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -72,6 +75,35 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
         _ => 'application/octet-stream',
       };
 
+  /// For lecture recordings: which class period does this video belong to?
+  Future<BoardSession?> _pickSession(Classroom classroom) async {
+    final sessions = (await repo.classroomSessions(classroom.id))
+        .where((s) => !s.isActive)
+        .toList();
+    if (sessions.isEmpty) {
+      if (mounted) {
+        showError(context,
+            'No ended class sessions yet — end a class first, then upload its recording.');
+      }
+      return null;
+    }
+    if (!mounted) return null;
+    return showDialog<BoardSession>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Which class is this recording from?'),
+        children: [
+          for (final s in sessions.take(8))
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(ctx).pop(s),
+              child: Text(shortWhen(s.startedAt)),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _upload() async {
     final classroom = _classroom;
     if (classroom == null || _uploading) return;
@@ -87,18 +119,86 @@ class _TeacherMediaTabState extends State<TeacherMediaTab> {
         }
         return;
       }
+      final mime = _mimeFor(file.extension?.toLowerCase());
+      final isPlayable =
+          mime.startsWith('video/') || mime.startsWith('audio/');
+
+      // A video/audio file can be THE lecture recording: then its audio is
+      // transcribed once (player subtitles) and the class notes are
+      // synthesised from that transcript + the session's slides.
+      BoardSession? session;
+      if (isPlayable && mounted) {
+        final asLecture = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            title: const Text('Is this the class lecture recording?'),
+            content: const Text(
+                'Lecture recordings get subtitles in every student\'s '
+                'language, and the class notes are generated from their '
+                'audio + the board slides.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Just media')),
+              FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('Lecture recording')),
+            ],
+          ),
+        );
+        if (asLecture == true) {
+          session = await _pickSession(classroom);
+          if (session == null) return; // cancelled / no sessions
+        }
+      }
+
       setState(() => _uploading = true);
-      await repo.uploadClassMedia(
+      final mediaId = await repo.uploadClassMedia(
         classroomId: classroom.id,
         teacherId: widget.teacher.id,
         title: file.name,
-        mime: _mimeFor(file.extension?.toLowerCase()),
+        mime: mime,
         bytes: bytes,
+        sessionId: session?.id,
+        transcriptStatus: session != null ? 'processing' : 'none',
       );
+
+      if (session != null) {
+        // Render the session's slides and hand everything to the proxy.
+        final noteId = await repo.createClassNotes(
+          classroomId: classroom.id,
+          language: 'en',
+          sessionId: session.id,
+        );
+        final slides = await repo.loadSessionSlides(session.id);
+        final pngs = <String>[];
+        final strokeCounts = <int>[];
+        for (final slide in slides) {
+          pngs.add(await SlideAi.renderSlideBase64(slide));
+          strokeCounts
+              .add(slide.backgroundUrl != null ? 999 : slide.strokes.length);
+        }
+        await repo.startLectureMediaJob(
+          mediaId: mediaId,
+          noteId: noteId,
+          language: 'en',
+          title: 'Class notes · ${branchByKey(classroom.branch).short} · '
+              '${shortWhen(session.startedAt)}',
+          mediaBytes: bytes,
+          mediaExt: file.extension?.toLowerCase() ?? 'mp4',
+          slidePngsB64: pngs,
+          strokeCounts: strokeCounts,
+          slideMarks: session.slideMarks,
+        );
+      }
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content:
-                Text('Uploaded — compressed & encrypted, in-app only. 🔒')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(session != null
+                ? 'Lecture uploaded 🔒 — subtitles and class notes are being prepared.'
+                : 'Uploaded — compressed & encrypted, in-app only. 🔒')));
       }
       await _load();
     } catch (e) {

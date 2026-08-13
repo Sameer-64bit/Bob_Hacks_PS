@@ -75,6 +75,8 @@ class LiveCaption {
 class ClassMedia {
   final String id;
   final String classroomId;
+  final String? sessionId; // set when this is the class lecture recording
+  final String transcriptStatus; // none | processing | ready | failed
   final String title;
   final String mime;
   final int bytesOriginal;
@@ -86,6 +88,8 @@ class ClassMedia {
   const ClassMedia({
     required this.id,
     required this.classroomId,
+    this.sessionId,
+    this.transcriptStatus = 'none',
     required this.title,
     required this.mime,
     required this.bytesOriginal,
@@ -95,6 +99,8 @@ class ClassMedia {
     required this.createdAt,
   });
 
+  bool get hasSubtitles => transcriptStatus == 'ready';
+
   bool get isVideo => mime.startsWith('video/');
   bool get isAudio => mime.startsWith('audio/');
   bool get isImage => mime.startsWith('image/');
@@ -103,6 +109,8 @@ class ClassMedia {
   factory ClassMedia.fromMap(Map<String, dynamic> m) => ClassMedia(
         id: m['id'] as String,
         classroomId: m['classroom_id'] as String,
+        sessionId: m['session_id'] as String?,
+        transcriptStatus: m['transcript_status'] as String? ?? 'none',
         title: m['title'] as String? ?? 'Untitled',
         mime: m['mime'] as String? ?? 'application/octet-stream',
         bytesOriginal: (m['bytes_original'] as num?)?.toInt() ?? 0,
@@ -121,11 +129,16 @@ class BoardSession {
   final DateTime startedAt;
   final DateTime? endedAt;
 
+  /// Slide-change timestamps recorded during class, kept so a lecture
+  /// video uploaded later can still be aligned slide-by-slide.
+  final List<Map<String, dynamic>> slideMarks;
+
   const BoardSession({
     required this.id,
     required this.classroomId,
     required this.startedAt,
     this.endedAt,
+    this.slideMarks = const [],
   });
 
   bool get isActive => endedAt == null;
@@ -137,6 +150,10 @@ class BoardSession {
         endedAt: m['ended_at'] == null
             ? null
             : DateTime.parse(m['ended_at'] as String).toLocal(),
+        slideMarks: [
+          for (final mark in (m['slide_marks'] as List? ?? const []))
+            (mark as Map).cast<String, dynamic>(),
+        ],
       );
 }
 
