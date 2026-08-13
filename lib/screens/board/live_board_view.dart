@@ -3,13 +3,16 @@ import 'package:flutter/material.dart';
 import '../../config.dart';
 import '../../data/languages.dart';
 import '../../models/models.dart';
+import '../../models/models3.dart';
 import '../../services/ai.dart';
 import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
+import '../../services/repository4.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import 'board_controller.dart';
+import 'board_history.dart';
 import 'board_join.dart';
 import 'board_painter.dart';
 
@@ -136,8 +139,30 @@ class _LiveBoardViewState extends State<LiveBoardView> {
     return Scaffold(
       backgroundColor: _chrome,
       body: SafeArea(
-        child: StreamBuilder<List<BoardSlide>>(
-          stream: repo.streamSlides(widget.classroom.id),
+        // Follow the classroom's latest board session — when the teacher
+        // starts a new board after ending a class, students switch to it
+        // automatically. Past boards live under the history button.
+        child: StreamBuilder<BoardSession?>(
+          stream: repo.streamLatestSession(widget.classroom.id),
+          builder: (context, sessionSnap) {
+            final session = sessionSnap.data;
+            if (sessionSnap.connectionState == ConnectionState.waiting &&
+                session == null) {
+              return const Center(
+                  child: CircularProgressIndicator(color: Palette.marigold));
+            }
+            if (session == null) return _emptyState();
+            return _buildSlides(session);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSlides(BoardSession session) {
+    return StreamBuilder<List<BoardSlide>>(
+          key: ValueKey(session.id),
+          stream: repo.streamSessionSlides(session.id),
           builder: (context, snapshot) {
             if (snapshot.hasError) {
               return Center(
@@ -198,9 +223,7 @@ class _LiveBoardViewState extends State<LiveBoardView> {
               ],
             );
           },
-        ),
-      ),
-    );
+        );
   }
 
   Widget _emptyState() {
@@ -285,6 +308,11 @@ class _LiveBoardViewState extends State<LiveBoardView> {
                   color: Colors.white70, size: 20),
             ),
           ],
+          IconButton(
+            tooltip: 'Past boards (by date)',
+            onPressed: () => showBoardHistory(context, widget.classroom),
+            icon: const Icon(Icons.history, color: Colors.white70, size: 20),
+          ),
           const SizedBox(width: 8),
         ],
       ),

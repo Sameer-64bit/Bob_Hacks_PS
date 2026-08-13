@@ -9,13 +9,16 @@ import 'package:record/record.dart';
 
 import '../../models/models.dart';
 import '../../models/models2.dart';
+import '../../models/models3.dart';
 import '../../services/ai.dart';
 import '../../services/board_pdf.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository3.dart';
+import '../../services/repository4.dart';
 import '../../theme.dart';
 import 'board_controller.dart';
+import 'board_history.dart';
 import 'board_join.dart';
 import 'board_painter.dart';
 
@@ -147,12 +150,17 @@ class _BoardScreenState extends State<BoardScreen> {
   }
 
   Classroom? get _classroom => widget.classroom;
+  BoardSession? _session;
 
   Future<void> _load() async {
     try {
       final classroom = _classroom;
-      final slides =
-          classroom == null ? <BoardSlide>[] : await repo.loadSlides(classroom.id);
+      List<BoardSlide> slides = [];
+      if (classroom != null) {
+        // Every teaching period gets its own board (session).
+        _session = await repo.activeSession(classroom.id);
+        slides = await repo.loadSessionSlides(_session!.id);
+      }
       final board = BoardController(slides: slides);
       board.onSlideChanged = _markDirty;
       board.addListener(() {
@@ -195,13 +203,16 @@ class _BoardScreenState extends State<BoardScreen> {
   Future<void> _flushSaves() async {
     final board = _board;
     final classroom = _classroom;
-    if (board == null || classroom == null || _dirty.isEmpty) return;
+    final session = _session;
+    if (board == null || classroom == null || session == null || _dirty.isEmpty) {
+      return;
+    }
     final indexes = _dirty.toList();
     _dirty.clear();
     try {
       for (final i in indexes) {
         if (i < board.slides.length) {
-          await repo.saveSlide(classroom.id, board.slides[i]);
+          await repo.saveSessionSlide(classroom.id, session.id, board.slides[i]);
         }
       }
       if (mounted) setState(() => _saveStatus = 'Saved');
@@ -215,14 +226,15 @@ class _BoardScreenState extends State<BoardScreen> {
   Future<void> _deleteSlide(int index) async {
     final board = _board!;
     final classroom = _classroom;
+    final session = _session;
     final oldCount = board.slides.length;
     if (!board.removeSlide(index)) return;
-    if (classroom == null) return;
+    if (classroom == null || session == null) return;
     try {
       for (final slide in board.slides) {
-        await repo.saveSlide(classroom.id, slide);
+        await repo.saveSessionSlide(classroom.id, session.id, slide);
       }
-      await repo.deleteSlide(classroom.id, oldCount - 1);
+      await repo.deleteSessionSlide(session.id, oldCount - 1);
     } catch (_) {
       if (mounted) setState(() => _saveStatus = 'Offline — retrying');
     }
@@ -439,10 +451,15 @@ class _BoardScreenState extends State<BoardScreen> {
 
       // 2. Create the notes row students will watch, then render the slides.
       noteId = await repo.createClassNotes(
-          classroomId: classroom.id, language: 'en');
+        classroomId: classroom.id,
+        language: 'en',
+        sessionId: _session?.id,
+      );
       final slides = <String>[];
+      final strokeCounts = <int>[];
       for (final slide in board.slides) {
         slides.add(await SlideAi.renderSlideBase64(slide));
+        strokeCounts.add(slide.strokes.length);
       }
 
       // 3. Hand everything to the proxy — it updates progress from here on.
@@ -451,16 +468,17 @@ class _BoardScreenState extends State<BoardScreen> {
         language: 'en',
         title: 'Class notes · ${classroomLabel(classroom)}',
         slidePngsB64: slides,
+        strokeCounts: strokeCounts,
         slideMarks: _slideMarks,
         audioUrl: audioUrl,
         audioExt: kIsWeb ? 'webm' : 'm4a',
       );
 
+      // 4. Close this session — its board stays in history under today's date.
+      if (_session != null) await repo.endSession(_session!.id);
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Class ended — notes are being prepared for your students. 👋')));
-      Navigator.of(context).pop();
+      await _offerNewBoard(classroom);
     } catch (e) {
       if (noteId != null) {
         try {
@@ -471,6 +489,75 @@ class _BoardScreenState extends State<BoardScreen> {
         setState(() => _endingClass = false);
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Could not start the notes: $e')));
+      }
+    }
+  }
+
+  /// After ending a class the teacher can spin up a fresh board for the
+  /// next period — same classroom code, blank slides, new session.
+  Future<void> _offerNewBoard(Classroom classroom) async {
+    final startNew = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Class ended 🎉'),
+        content: const Text(
+            'Notes are being prepared for your students. This board is saved '
+            'in history under today\'s date. Start a new board for the next '
+            'class?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Leave board')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('New board')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (startNew != true) {
+      Navigator.of(context).pop();
+      return;
+    }
+    try {
+      final session = await repo.newSession(classroom.id);
+      final fresh = BoardController();
+      fresh.onSlideChanged = _markDirty;
+      fresh.addListener(() {
+        _revision++;
+        if (_lectureRecording && fresh.current != _lastSlideIndex) {
+          _slideMarks.add({
+            'index': fresh.current,
+            'at': DateTime.now()
+                    .difference(_audioStart ?? DateTime.now())
+                    .inMilliseconds /
+                1000.0,
+          });
+        }
+        _lastSlideIndex = fresh.current;
+        if (mounted) setState(() {});
+      });
+      _board?.dispose();
+      setState(() {
+        _session = session;
+        _board = fresh;
+        _endingClass = false;
+        _lastSlideIndex = 0;
+        _slideMarks.clear();
+        _dirty.clear();
+        _saveStatus = 'Saved';
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Fresh board ready — same classroom code.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _endingClass = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not start a new board: $e')));
       }
     }
   }
@@ -573,6 +660,9 @@ class _BoardScreenState extends State<BoardScreen> {
                   recording: _lectureRecording,
                   onToggleRecording:
                       widget.classroom == null ? null : _toggleLectureRecording,
+                  onHistory: widget.classroom == null
+                      ? null
+                      : () => showBoardHistory(context, widget.classroom!),
                 ),
                 Expanded(
                   child: Row(
@@ -797,6 +887,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onSharePdf;
   final bool recording;
   final VoidCallback? onToggleRecording;
+  final VoidCallback? onHistory;
 
   const _TopBar({
     required this.board,
@@ -809,6 +900,7 @@ class _TopBar extends StatelessWidget {
     required this.onSharePdf,
     required this.recording,
     required this.onToggleRecording,
+    required this.onHistory,
   });
 
   @override
@@ -982,6 +1074,12 @@ class _TopBar extends StatelessWidget {
                     color: recording ? const Color(0xFFE57373) : Colors.white70,
                   ),
                 ),
+              ),
+            if (onHistory != null)
+              _ActionButton(
+                icon: Icons.history,
+                label: 'Past boards (by date)',
+                onTap: onHistory,
               ),
             const SizedBox(width: 10),
           ],

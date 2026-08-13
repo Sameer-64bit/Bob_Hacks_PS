@@ -26,18 +26,56 @@ class SlideNote {
 class ConceptNote {
   final String term;
   final String definition;
-  const ConceptNote({required this.term, required this.definition});
+  final String? imageUrl; // Wikipedia thumbnail, when one was found
+  final String? wiki; // one-line encyclopedia extract
+
+  const ConceptNote({
+    required this.term,
+    required this.definition,
+    this.imageUrl,
+    this.wiki,
+  });
 
   factory ConceptNote.fromMap(Map<String, dynamic> m) => ConceptNote(
         term: m['concept'] as String? ?? m['term'] as String? ?? '',
         definition:
             m['explanation'] as String? ?? m['definition'] as String? ?? '',
+        imageUrl: m['image'] as String?,
+        wiki: m['wiki'] as String?,
+      );
+}
+
+/// One whiteboard session — a single teaching period's board, tied to
+/// its date and time. A classroom accumulates many of these.
+class BoardSession {
+  final String id;
+  final String classroomId;
+  final DateTime startedAt;
+  final DateTime? endedAt;
+
+  const BoardSession({
+    required this.id,
+    required this.classroomId,
+    required this.startedAt,
+    this.endedAt,
+  });
+
+  bool get isActive => endedAt == null;
+
+  factory BoardSession.fromMap(Map<String, dynamic> m) => BoardSession(
+        id: m['id'] as String,
+        classroomId: m['classroom_id'] as String,
+        startedAt: DateTime.parse(m['started_at'] as String).toLocal(),
+        endedAt: m['ended_at'] == null
+            ? null
+            : DateTime.parse(m['ended_at'] as String).toLocal(),
       );
 }
 
 class ClassNotes {
   final String id;
   final String classroomId;
+  final String? sessionId; // which board session these notes came from
   final String status; // processing | ready | failed
   final int progress;
   final String stage;
@@ -54,6 +92,7 @@ class ClassNotes {
   const ClassNotes({
     required this.id,
     required this.classroomId,
+    this.sessionId,
     required this.status,
     required this.progress,
     required this.stage,
@@ -80,6 +119,7 @@ class ClassNotes {
     return ClassNotes(
       id: m['id'] as String,
       classroomId: m['classroom_id'] as String,
+      sessionId: m['session_id'] as String?,
       status: m['status'] as String? ?? 'processing',
       progress: (m['progress'] as num?)?.toInt() ?? 0,
       stage: m['stage'] as String? ?? '',

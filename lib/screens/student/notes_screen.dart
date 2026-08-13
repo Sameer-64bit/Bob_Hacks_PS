@@ -7,6 +7,7 @@ import '../../models/models3.dart';
 import '../../screens/board/board_painter.dart';
 import '../../services/notes_pdf.dart';
 import '../../services/repository.dart';
+import '../../services/repository4.dart';
 import '../../services/translator.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -41,8 +42,11 @@ class _NotesScreenState extends State<NotesScreen> {
   @override
   void initState() {
     super.initState();
-    repo
-        .loadSlides(widget.classroom.id)
+    // Slides come from the exact board session this class used.
+    final sessionId = widget.notes.sessionId;
+    (sessionId != null
+            ? repo.loadSessionSlides(sessionId)
+            : repo.loadSlides(widget.classroom.id))
         .then((s) => mounted ? setState(() => _slides = s) : null)
         .catchError((_) {});
     _translate();
@@ -55,30 +59,54 @@ class _NotesScreenState extends State<NotesScreen> {
     try {
       final n = widget.notes;
       Future<String> t(String s) => Translator.translate(s, code);
+
+      // Translate everything concurrently — one slow call no longer holds
+      // up the whole page.
+      final results = await Future.wait<String>([
+        t(n.overview),
+        t(n.simplifiedSummary),
+        for (final c in n.keyConcepts) t(c.definition),
+        for (final c in n.technicalTerms) t(c.definition),
+        for (final s in n.perSlide) t(s.summary),
+      ]);
+      var cursor = 0;
+      String next() => results[cursor++];
+
+      final overview = next();
+      final simplified = next();
       final translated = ClassNotes(
         id: n.id,
         classroomId: n.classroomId,
+        sessionId: n.sessionId,
         status: n.status,
         progress: n.progress,
         stage: n.stage,
         createdAt: n.createdAt,
         title: n.title,
-        overview: await t(n.overview),
-        simplifiedSummary: await t(n.simplifiedSummary),
+        overview: overview,
+        simplifiedSummary: simplified,
         keyConcepts: [
           for (final c in n.keyConcepts)
-            ConceptNote(term: c.term, definition: await t(c.definition)),
+            ConceptNote(
+                term: c.term,
+                definition: next(),
+                imageUrl: c.imageUrl,
+                wiki: c.wiki),
         ],
         technicalTerms: [
           for (final c in n.technicalTerms)
-            ConceptNote(term: c.term, definition: await t(c.definition)),
+            ConceptNote(
+                term: c.term,
+                definition: next(),
+                imageUrl: c.imageUrl,
+                wiki: c.wiki),
         ],
         perSlide: [
           for (final s in n.perSlide)
             SlideNote(
               index: s.index,
               title: s.title,
-              summary: await t(s.summary),
+              summary: next(),
               transcript: s.transcript, // spoken words stay as spoken
             ),
         ],
@@ -183,6 +211,12 @@ class _NotesScreenState extends State<NotesScreen> {
                 const SizedBox(height: 8),
                 Text(notes.simplifiedSummary, style: text.bodyLarge),
               ],
+              if (notes.perSlide.length > 1) ...[
+                const SizedBox(height: 20),
+                const SectionTitle('Lecture flow'),
+                const SizedBox(height: 8),
+                _LectureFlow(notes: notes),
+              ],
               if (notes.keyConcepts.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 const SectionTitle('Key concepts'),
@@ -223,6 +257,81 @@ String shortWhenFromDate(DateTime t) {
   return '${t.day} ${months[t.month - 1]}';
 }
 
+/// A visual map of the class: numbered steps through the slides.
+class _LectureFlow extends StatelessWidget {
+  final ClassNotes notes;
+  const _LectureFlow({required this.notes});
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = notes.perSlide;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Palette.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Palette.line),
+      ),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          for (var i = 0; i < steps.length; i++) ...[
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Palette.navy.withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(999),
+                border:
+                    Border.all(color: Palette.navy.withValues(alpha: 0.2)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircleAvatar(
+                    radius: 8,
+                    backgroundColor: Palette.navy,
+                    child: Text('${i + 1}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Text(
+                      _stepLabel(steps[i]),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Palette.navy),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (i < steps.length - 1)
+              const Icon(Icons.arrow_forward,
+                  size: 14, color: Palette.faint),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _stepLabel(SlideNote s) {
+    final words = s.summary.split(RegExp(r'\s+'));
+    final short = words.take(5).join(' ');
+    return short.isEmpty ? s.title : short;
+  }
+}
+
 class _ConceptTile extends StatelessWidget {
   final ConceptNote concept;
   const _ConceptTile({required this.concept});
@@ -230,6 +339,57 @@ class _ConceptTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
+    // Concepts that got a Wikipedia illustration render as image cards;
+    // the rest stay compact bullets.
+    if (concept.imageUrl != null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        decoration: BoxDecoration(
+          color: Palette.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Palette.line),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Image.network(
+              concept.imageUrl!,
+              width: 86,
+              height: 86,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                width: 86,
+                height: 86,
+                color: Palette.paper,
+                child: const Icon(Icons.image_not_supported_outlined,
+                    color: Palette.faint),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(concept.term,
+                        style: text.titleMedium?.copyWith(fontSize: 14)),
+                    const SizedBox(height: 3),
+                    Text(concept.definition, style: text.bodyMedium),
+                    if (concept.wiki != null &&
+                        concept.wiki != concept.definition) ...[
+                      const SizedBox(height: 4),
+                      Text('📖 ${concept.wiki}',
+                          style: text.bodySmall?.copyWith(fontSize: 11.5)),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(

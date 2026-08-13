@@ -4,10 +4,12 @@ import 'package:table_calendar/table_calendar.dart';
 import '../../data/branches.dart';
 import '../../data/languages.dart';
 import '../../models/models.dart';
+import '../../models/models2.dart';
 import '../../models/models3.dart';
 import '../../services/repository.dart';
 import '../../services/repository2.dart';
 import '../../services/repository3.dart';
+import '../../services/repository4.dart';
 import '../../services/session.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -443,8 +445,15 @@ class ClassNotesSection extends StatelessWidget {
                   color: Palette.sage, size: 20),
               const SizedBox(width: 10),
               Expanded(
-                child: Text('Class notes are ready',
-                    style: text.titleMedium?.copyWith(fontSize: 13.5)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Class notes are ready',
+                        style: text.titleMedium?.copyWith(fontSize: 13.5)),
+                    Text('From the class on ${shortWhen(notes.createdAt)}',
+                        style: text.bodySmall),
+                  ],
+                ),
               ),
               FilledButton(
                 style: FilledButton.styleFrom(
@@ -462,16 +471,100 @@ class ClassNotesSection extends StatelessWidget {
             ],
           );
         }
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Palette.paper,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: child,
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Palette.paper,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: child,
+            ),
+            TextButton.icon(
+              onPressed: () => _showNotesHistory(context),
+              icon: const Icon(Icons.history, size: 16),
+              label: const Text('All class notes by date'),
+            ),
+          ],
         );
       },
+    );
+  }
+
+  Future<void> _showNotesHistory(BuildContext context) async {
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: FutureBuilder<List<ClassNotes>>(
+          future: repo.classroomNotesHistory(classroom.id),
+          builder: (ctx, snapshot) {
+            if (!snapshot.hasData) {
+              return const SizedBox(
+                height: 200,
+                child: Center(
+                    child: CircularProgressIndicator(color: Palette.navy)),
+              );
+            }
+            final all =
+                snapshot.data!.where((n) => n.isReady).toList();
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 22, 24, 8),
+                  child: Text('Class notes by date',
+                      style: Theme.of(ctx).textTheme.headlineMedium),
+                ),
+                if (all.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(24, 8, 24, 30),
+                    child: Text('No notes yet.'),
+                  )
+                else
+                  Flexible(
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final n in all)
+                          ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 2),
+                            leading: const Icon(Icons.auto_stories_outlined,
+                                color: Palette.sage),
+                            title: Text(shortWhen(n.createdAt)),
+                            subtitle: Text(n.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            trailing: const Icon(Icons.chevron_right,
+                                color: Palette.faint),
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              Navigator.of(context)
+                                  .push(MaterialPageRoute(
+                                builder: (_) => NotesScreen(
+                                  notes: n,
+                                  classroom: classroom,
+                                  languageCode: languageCode,
+                                ),
+                              ));
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 12),
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 }

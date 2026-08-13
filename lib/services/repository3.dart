@@ -17,11 +17,13 @@ extension RepositoryV4 on Repository {
   Future<String> createClassNotes({
     required String classroomId,
     required String language,
+    String? sessionId,
   }) async {
     final row = await _db
         .from('class_notes')
         .insert({
           'classroom_id': classroomId,
+          if (sessionId != null) 'session_id': sessionId,
           'language': language,
           'stage': 'Uploading the class…',
         })
@@ -65,6 +67,7 @@ extension RepositoryV4 on Repository {
     required String language,
     required String title,
     required List<String> slidePngsB64,
+    required List<int> strokeCounts,
     required List<Map<String, dynamic>> slideMarks,
     String? audioUrl,
     String audioExt = 'webm',
@@ -79,6 +82,7 @@ extension RepositoryV4 on Repository {
             'language': language,
             'title': title,
             'slides': slidePngsB64,
+            'stroke_counts': strokeCounts,
             'slide_marks': slideMarks,
             'audio_url': audioUrl,
             'audio_ext': audioExt,

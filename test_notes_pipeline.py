@@ -64,6 +64,26 @@ def test_key_terms_skip_stopwords():
     assert all(t["definition"] for t in terms)
 
 
+
+
+
+def test_wiki_enrich_with_injected_fetch():
+    from notes_pipeline import wiki_enrich
+
+    notes = {"key_concepts": [{"term": "Recursion", "definition": "x"}]}
+
+    def fake(term):
+        return {
+            "type": "standard",
+            "thumbnail": {"source": "https://img/r.png"},
+            "extract": "Recursion is self-reference.",
+        }
+
+    out = wiki_enrich(notes, fetch=fake)
+    assert out["key_concepts"][0]["image"] == "https://img/r.png"
+    assert out["key_concepts"][0]["wiki"]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

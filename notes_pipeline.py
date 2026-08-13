@@ -140,6 +140,44 @@ def compose_notes(title, slide_summaries, per_slide_transcript, unassigned, lang
 
 
 # ---------------------------------------------------------------------------
+# Free imagery: attach a Wikipedia thumbnail + a one-line extract to the key
+# concepts so the notes get real illustrations (no API key needed).
+# ---------------------------------------------------------------------------
+
+def wiki_enrich(notes, limit=4, timeout=6, fetch=None):
+    """Best-effort illustration lookup. `fetch` is injectable for tests."""
+    import urllib.parse
+
+    def default_fetch(term):
+        url = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
+               + urllib.parse.quote(term))
+        req = urllib.request.Request(url, headers={"User-Agent": "kaksha-notes/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+
+    fetch = fetch or default_fetch
+    enriched = []
+    for concept in notes.get("key_concepts", [])[:limit]:
+        term = concept.get("term") or concept.get("concept") or ""
+        item = dict(concept)
+        try:
+            data = fetch(term)
+            if data.get("type") == "standard":
+                thumb = (data.get("thumbnail") or {}).get("source")
+                if thumb:
+                    item["image"] = thumb
+                extract = data.get("extract")
+                if extract:
+                    item["wiki"] = first_sentences(extract, 2)
+        except Exception:  # noqa: BLE001 — imagery is a bonus, never a blocker
+            pass
+        enriched.append(item)
+    out = dict(notes)
+    out["key_concepts"] = enriched + list(notes.get("key_concepts", []))[limit:]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Optional Gemini polish — ported from Content_Generation/server/aiServer.mjs.
 # Same schema; strictly time-boxed so a slow network never blocks the notes.
 # ---------------------------------------------------------------------------

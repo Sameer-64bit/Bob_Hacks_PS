@@ -109,7 +109,14 @@ def run_vlm(prompt: str, image: Image.Image | None = None, max_new_tokens: int =
         inputs = processor(text=prompt_text, return_tensors="pt")
     inputs = inputs.to(DEVICE)
 
-    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    # Greedy decoding + repetition penalty keeps the small model from
+    # inventing objects ("a plant on the desk"…) that are not on the board.
+    generated_ids = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=1.3,
+    )
     output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
     if "Assistant:" in output:
         output = output.split("Assistant:")[-1].strip()
@@ -136,7 +143,7 @@ def generate(req: GenerateRequest):
 
 import tempfile
 
-from notes_pipeline import align_segments, compose_notes, gemini_enhance
+from notes_pipeline import align_segments, compose_notes, gemini_enhance, wiki_enrich
 
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")  # tiny/base = fast
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -183,10 +190,24 @@ class EndClassRequest(BaseModel):
     language: str = "en"
     title: str = "Class notes"
     slides: list[str] = []          # base64 PNGs, in order
+    stroke_counts: list[int] = []   # strokes per slide — sparse slides skip the VLM
     slide_marks: list[dict] = []    # [{"index": int, "at": seconds}]
     audio_b64: str | None = None
     audio_url: str | None = None           # public URL (preferred for big files)
     audio_ext: str = "webm"
+
+
+# Sparse doodles make the 500M model hallucinate scenery. Below this many
+# strokes we don't ask it anything.
+MIN_STROKES_FOR_VLM = 3
+
+SLIDE_PROMPT = (
+    "This image is a digital whiteboard from a class: handwriting and line "
+    "drawings on a plain white background. There are no photos, objects, "
+    "plants or people in it. Transcribe the text that is actually written "
+    "and briefly describe any diagram, in 2-3 sentences of class notes. "
+    "If the strokes are too unclear to read, reply exactly: Unclear sketch."
+)
 
 
 def _transcribe(req: EndClassRequest):
@@ -223,18 +244,21 @@ def _process_class_notes(req: EndClassRequest):
             logger.warning(f"Transcription failed, continuing with slides only: {e}")
 
         # 2. Read every slide with SmolVLM (the model is already in memory).
+        #    Slides with almost no ink are skipped — asking a small VLM about
+        #    three stray lines is where the hallucinations came from.
         slide_summaries = []
         total = max(len(req.slides), 1)
         for i, b64 in enumerate(req.slides):
             note(20 + int(55 * i / total), f"Reading slide {i + 1} of {total}…")
+            strokes = req.stroke_counts[i] if i < len(req.stroke_counts) else None
+            if strokes is not None and strokes < MIN_STROKES_FOR_VLM:
+                slide_summaries.append("")
+                continue
             try:
                 image = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-                text = run_vlm(
-                    "Read this whiteboard slide and summarise what is written and "
-                    "drawn on it in 2-4 sentences for class notes.",
-                    image,
-                    max_new_tokens=200,
-                )
+                text = run_vlm(SLIDE_PROMPT, image, max_new_tokens=180)
+                if "unclear sketch" in text.lower():
+                    text = ""
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Slide {i} failed: {e}")
                 text = ""
@@ -247,8 +271,12 @@ def _process_class_notes(req: EndClassRequest):
 
         # 4. Optional Gemini polish (Content_Generation's schema), time-boxed.
         if GEMINI_API_KEY:
-            note(90, "Polishing with Gemini…")
+            note(88, "Polishing with Gemini…")
             notes = gemini_enhance(notes, GEMINI_API_KEY)
+
+        # 5. Free Wikipedia illustrations for the key concepts.
+        note(94, "Adding illustrations…")
+        notes = wiki_enrich(notes)
 
         supabase_update_note(
             req.note_id,
